@@ -1,0 +1,210 @@
+// =============================================================================
+// TOUCH INPUT HANDLER - POWER OPTIMIZED V2
+// =============================================================================
+// CONSTRAINTS APPLIED:
+// - Mic arming ONLY when touch-down on record-eligible UI element (IDLE state)
+// - Generic wake taps, swipes, navigation MUST NOT arm mic
+// - Touch monitor mode with gesture wake for idle state
+// =============================================================================
+
+#include "touch.h"
+
+#include <Arduino.h>
+#include "../hardware_config.h"
+#include "../ui/ui_common.h"
+#include "../ui/ui_answer.h"
+#include "../system/state.h"
+#include "../system/sleep.h"
+#include "../ble/ble_core.h"
+#include "../power/power_manager_v2.h"
+#include "../audio/audio_i2s_power.h"  // For speculative mic arming
+
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+constexpr uint32_t TOUCH_DEBOUNCE_MS    = 30;
+constexpr uint32_t WAKE_DEBOUNCE_MS     = 15;
+constexpr uint32_t TAP_MAX_DURATION_MS  = 500;
+
+// =============================================================================
+// STATE
+// =============================================================================
+
+static bool s_wasTouched = false;
+static uint32_t s_touchDownMs = 0;
+static bool s_pendingTouch = false;
+static bool s_touchProcessed = false;
+static bool s_micArmedThisTouch = false;  // Track if we armed mic for this touch
+
+// =============================================================================
+// MAIN TOUCH HANDLER
+// =============================================================================
+
+void handleTouch() {
+    // -------------------------------------------------------------------------
+    // IDLE STATE: Don't poll I2C, use GPIO check only
+    // -------------------------------------------------------------------------
+    if (g_sleeping) {
+        if (digitalRead(TOUCH_INT_PIN) == LOW) {
+            powerMarkActivity();
+            g_ignoreTap = true;
+        }
+        return;
+    }
+
+    const uint32_t now = millis();
+    lgfx::touch_point_t tp;
+    bool touched = gfx.getTouch(&tp);
+
+    // -------------------------------------------------------------------------
+    // EDGE DETECTION: Touch down
+    // -------------------------------------------------------------------------
+    if (touched && !s_wasTouched) {
+        s_touchDownMs = now;
+        s_pendingTouch = true;
+        s_touchProcessed = false;
+        s_micArmedThisTouch = false;
+
+        // Wake handling
+        if (g_sleeping) {
+            powerMarkActivity();
+            g_ignoreTap = true;
+            s_touchProcessed = true;
+        }
+        else if (g_dimmed) {
+            markActivity();
+            g_ignoreTap = true;
+            s_touchProcessed = true;
+        }
+        else {
+            // =========================================================
+            // CONSTRAINT: Speculative mic arming ONLY in record-eligible context
+            // =========================================================
+            // Record-eligible = IDLE state (where tap starts recording)
+            // NOT record-eligible:
+            //   - ANSWER state (scrolling text)
+            //   - WAITING_TIME / WAITING_ANSWER (animation screens)
+            //   - Any other navigation gesture
+            // =========================================================
+            if (currentState == IDLE && canSendControlMessages()) {
+                // This is a potential recording tap - speculatively arm mic
+                // The 50-100ms I2S install latency is hidden during touch hold
+                if (micArmForRecording()) {
+                    s_micArmedThisTouch = true;
+                    LOG("[TOUCH] Mic armed speculatively (IDLE touch-down)\n");
+                }
+            }
+            // If not in IDLE, DO NOT arm mic
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // EDGE DETECTION: Touch up
+    // -------------------------------------------------------------------------
+    if (!touched && s_wasTouched) {
+        s_pendingTouch = false;
+
+        // If we armed mic but didn't start recording, let timeout handle disarm
+        // micDisarmIfIdle() is called from main loop
+
+        if (g_ignoreTap && !g_sleeping && !g_dimmed) {
+            g_ignoreTap = false;
+        }
+    }
+
+    s_wasTouched = touched;
+
+    // -------------------------------------------------------------------------
+    // DIMMED: Exit early
+    // -------------------------------------------------------------------------
+    if (g_dimmed) {
+        return;
+    }
+
+    // -------------------------------------------------------------------------
+    // DEBOUNCE
+    // -------------------------------------------------------------------------
+    uint32_t touchDuration = now - s_touchDownMs;
+    bool debounceOk = s_pendingTouch && touched && (touchDuration >= TOUCH_DEBOUNCE_MS);
+
+    if (debounceOk && !s_touchProcessed) {
+        markActivity();
+    }
+
+    // -------------------------------------------------------------------------
+    // IGNORE TAP
+    // -------------------------------------------------------------------------
+    if (g_ignoreTap) {
+        if (!touched) {
+            g_ignoreTap = false;
+        }
+        return;
+    }
+
+    // -------------------------------------------------------------------------
+    // WAITING STATES: No input
+    // -------------------------------------------------------------------------
+    if (currentState == WAITING_ANSWER || currentState == WAITING_TIME) {
+        return;
+    }
+
+    // -------------------------------------------------------------------------
+    // ANSWER STATE: Scroll handling (NO mic arming here)
+    // -------------------------------------------------------------------------
+    if (currentState == ANSWER) {
+        if (!touched) {
+            if (g_lastTouchY >= 0 && !g_touchMoved) {
+                uint32_t tapDuration = now - s_touchDownMs;
+                if (tapDuration < TAP_MAX_DURATION_MS) {
+                    currentState = IDLE;
+                }
+            }
+            g_lastTouchY = -1;
+            g_touchMoved = false;
+            return;
+        }
+
+        if (g_lastTouchY < 0) {
+            g_touchStartX = tp.x;
+            g_touchStartY = tp.y;
+            g_lastTouchY = tp.y;
+            g_touchMoved = false;
+            return;
+        }
+
+        int dy = tp.y - g_lastTouchY;
+        g_lastTouchY = tp.y;
+
+        if (abs(tp.x - g_touchStartX) > 3 || abs(tp.y - g_touchStartY) > 3) {
+            g_touchMoved = true;
+        }
+
+        if (dy != 0 && g_touchMoved) {
+            int prevScroll = g_scrollY;
+            g_scrollY += dy;
+            if (g_scrollY < 0) g_scrollY = 0;
+            if (g_scrollY > g_maxScroll) g_scrollY = g_maxScroll;
+
+            if (g_scrollY != prevScroll) {
+                drawFullAnswerScreen();
+            }
+        }
+        return;
+    }
+
+    // -------------------------------------------------------------------------
+    // IDLE STATE: Recording toggle
+    // -------------------------------------------------------------------------
+    if (debounceOk && !s_touchProcessed) {
+        s_touchProcessed = true;
+
+        if (g_recordingInProgress) {
+            stopRecording();
+        } else if (canSendControlMessages()) {
+            // Mic should already be armed from touch-down
+            // Start recording (will use armed driver or arm if needed)
+            startRecording();
+        }
+    }
+}

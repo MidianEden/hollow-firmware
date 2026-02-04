@@ -1,0 +1,278 @@
+// =============================================================================
+// BASELINE POWER TEST FIRMWARE
+// =============================================================================
+// This is a MINIMAL firmware to establish baseline power consumption.
+// Copy this to main.cpp to test, then restore your original main.cpp
+//
+// PURPOSE:
+// 1. Measure absolute minimum current draw (deep sleep)
+// 2. Measure BLE-only current draw (no display, no audio)
+// 3. Identify if hardware is capable of target power consumption
+//
+// INSTRUCTIONS:
+// 1. Rename your current main.cpp to main.cpp.bak
+// 2. Copy this entire file content to main.cpp
+// 3. Build and flash
+// 4. Measure current with a multimeter or USB power meter
+// 5. Compare readings to expected values below
+//
+// EXPECTED CURRENT DRAW (T-Watch S3):
+// - Deep sleep (all off): 10-50 uA
+// - Light sleep (BLE idle): 1-5 mA
+// - BLE connected, display off: 8-15 mA
+// - BLE connected, display on: 40-60 mA
+// - Recording active: 60-80 mA
+//
+// If your readings are SIGNIFICANTLY higher (2x+), you have a hardware
+// or firmware issue that must be resolved before the full firmware will
+// work correctly.
+// =============================================================================
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <esp_sleep.h>
+#include <esp_wifi.h>
+#include <esp_bt.h>
+#include <esp_pm.h>
+#include <XPowersLib.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLE2902.h>
+
+// Hardware pins (T-Watch S3)
+#define PMU_SDA 10
+#define PMU_SCL 11
+#define PMU_INT 21
+#define TOUCH_INT 16
+
+XPowersAXP2101 pmu;
+
+// Test mode selection
+enum TestMode {
+    TEST_DEEP_SLEEP,        // Minimum power - everything off
+    TEST_LIGHT_SLEEP_ONLY,  // CPU sleeps, no BLE
+    TEST_BLE_ADVERTISING,   // BLE advertising, no connection
+    TEST_BLE_CONNECTED,     // BLE connected, idle
+    TEST_DISPLAY_ON         // BLE + display on
+};
+
+// CHANGE THIS TO SELECT TEST MODE
+TestMode currentTest = TEST_BLE_ADVERTISING;
+
+// BLE
+static BLEServer* bleServer = nullptr;
+static bool bleConnected = false;
+
+class ServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer*) override {
+        bleConnected = true;
+        Serial.println("[TEST] BLE CONNECTED");
+    }
+    void onDisconnect(BLEServer*) override {
+        bleConnected = false;
+        Serial.println("[TEST] BLE DISCONNECTED");
+        BLEDevice::startAdvertising();
+    }
+};
+
+void initPMU() {
+    Wire.begin(PMU_SDA, PMU_SCL);
+
+    if (!pmu.init(Wire)) {
+        Serial.println("[TEST] ERROR: PMU init failed!");
+        return;
+    }
+
+    Serial.println("[TEST] PMU initialized");
+
+    // Disable ALL power rails for minimum power
+    pmu.disableDC2();
+    pmu.disableDC3();
+    pmu.disableDC4();
+    pmu.disableDC5();
+    pmu.disableALDO1();
+    pmu.disableALDO2();  // Display backlight
+    pmu.disableALDO3();  // Display + touch (keep for touch wake)
+    pmu.disableALDO4();
+    pmu.disableBLDO1();
+    pmu.disableBLDO2();  // Haptics
+    pmu.disableDLDO1();  // Speaker
+    pmu.disableDLDO2();
+    pmu.disableCPUSLDO();
+
+    // Disable most ADC channels
+    pmu.disableTSPinMeasure();
+    pmu.disableVbusVoltageMeasure();
+    pmu.disableSystemVoltageMeasure();
+
+    // Keep battery monitoring
+    pmu.enableBattDetection();
+    pmu.enableBattVoltageMeasure();
+
+    // Charging LED off
+    pmu.setChargingLedMode(XPOWERS_CHG_LED_OFF);
+
+    Serial.printf("[TEST] Battery: %dmV\n", pmu.getBattVoltage());
+}
+
+void initBLE() {
+    Serial.println("[TEST] Initializing BLE...");
+
+    BLEDevice::init("HollowTest");
+    BLEDevice::setMTU(247);
+
+    // Low TX power for power savings
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N3);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_N3);
+
+    bleServer = BLEDevice::createServer();
+    bleServer->setCallbacks(new ServerCallbacks());
+
+    // Create a simple service
+    BLEService* service = bleServer->createService("4FAFC201-1FB5-459E-8FCC-C5C9C331914B");
+    BLECharacteristic* testChar = service->createCharacteristic(
+        "BEB5483E-36E1-4688-B7F5-EA07361B26A8",
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    testChar->addDescriptor(new BLE2902());
+    service->start();
+
+    // Slow advertising interval (500ms - 1000ms)
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    adv->addServiceUUID("4FAFC201-1FB5-459E-8FCC-C5C9C331914B");
+    adv->setMinInterval(0x0320);  // 500ms
+    adv->setMaxInterval(0x0640);  // 1000ms
+    adv->setScanResponse(true);
+    BLEDevice::startAdvertising();
+
+    Serial.println("[TEST] BLE advertising started");
+}
+
+void enterDeepSleep() {
+    Serial.println("\n[TEST] ===== ENTERING DEEP SLEEP =====");
+    Serial.println("[TEST] Expected current: 10-50 uA");
+    Serial.println("[TEST] Touch screen to wake");
+    Serial.flush();
+
+    // Disable BLE
+    esp_bluedroid_disable();
+    esp_bluedroid_deinit();
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+
+    // Keep ALDO3 for touch wake
+    pmu.enableALDO3();
+
+    // Configure wake on touch
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT, 0);
+
+    esp_deep_sleep_start();
+}
+
+void setup() {
+    // Disable WiFi immediately
+    esp_wifi_stop();
+    esp_wifi_deinit();
+
+    // Set low CPU frequency
+    setCpuFrequencyMhz(80);
+
+    Serial.begin(115200);
+    delay(500);
+
+    Serial.println("\n\n==========================================");
+    Serial.println("  HOLLOW POWER BASELINE TEST");
+    Serial.println("==========================================\n");
+
+    Serial.printf("Test Mode: %d\n", currentTest);
+    Serial.printf("CPU Frequency: %d MHz\n", getCpuFrequencyMhz());
+
+    // Initialize PMU
+    initPMU();
+
+    switch (currentTest) {
+        case TEST_DEEP_SLEEP:
+            Serial.println("\n[TEST] Mode: DEEP SLEEP");
+            Serial.println("[TEST] Starting in 5 seconds...");
+            Serial.println("[TEST] Measure current NOW with multimeter");
+            Serial.flush();
+            delay(5000);
+            enterDeepSleep();
+            break;
+
+        case TEST_LIGHT_SLEEP_ONLY:
+            Serial.println("\n[TEST] Mode: LIGHT SLEEP ONLY (no BLE)");
+            Serial.println("[TEST] Expected: 0.5-2 mA");
+            {
+                esp_pm_config_esp32s3_t pm_config = {};
+                pm_config.max_freq_mhz = 80;
+                pm_config.min_freq_mhz = 10;
+                pm_config.light_sleep_enable = true;
+                esp_pm_configure(&pm_config);
+            }
+            break;
+
+        case TEST_BLE_ADVERTISING:
+            Serial.println("\n[TEST] Mode: BLE ADVERTISING");
+            Serial.println("[TEST] Expected: 3-8 mA");
+            pmu.enableALDO3();  // Touch for interaction
+            initBLE();
+            break;
+
+        case TEST_BLE_CONNECTED:
+            Serial.println("\n[TEST] Mode: BLE CONNECTED (connect with phone)");
+            Serial.println("[TEST] Expected: 8-15 mA");
+            pmu.enableALDO3();
+            initBLE();
+            break;
+
+        case TEST_DISPLAY_ON:
+            Serial.println("\n[TEST] Mode: BLE + DISPLAY ON");
+            Serial.println("[TEST] Expected: 40-60 mA");
+            pmu.enableALDO2();  // Backlight
+            pmu.enableALDO3();  // Display + touch
+            initBLE();
+            break;
+    }
+
+    Serial.println("\n[TEST] Setup complete, entering loop");
+    Serial.println("==========================================\n");
+}
+
+void loop() {
+    static uint32_t lastPrint = 0;
+    uint32_t now = millis();
+
+    // Print status every 5 seconds
+    if (now - lastPrint > 5000) {
+        lastPrint = now;
+
+        Serial.printf("[TEST] Uptime: %lu s | Battery: %d mV | ",
+                      now / 1000, pmu.getBattVoltage());
+
+        if (currentTest >= TEST_BLE_ADVERTISING) {
+            Serial.printf("BLE: %s", bleConnected ? "CONNECTED" : "Advertising");
+        }
+
+        Serial.println();
+    }
+
+    // Different loop delays based on mode
+    switch (currentTest) {
+        case TEST_LIGHT_SLEEP_ONLY:
+            delay(1000);  // Long delay allows light sleep
+            break;
+
+        case TEST_BLE_ADVERTISING:
+        case TEST_BLE_CONNECTED:
+            delay(100);   // Short delay, BLE needs to process
+            break;
+
+        case TEST_DISPLAY_ON:
+            delay(33);    // ~30fps
+            break;
+
+        default:
+            delay(100);
+    }
+}
