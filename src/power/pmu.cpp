@@ -19,7 +19,7 @@ static void calibrationPMU(uint16_t batteryCapacityMah) {
     // Enable fuel gauge for battery percentage
     g_pmu.enableGauge();
     g_pmu.fuelGaugeControl(true, true);
-    Serial.printf("Fuel gauge configured for %d mAh battery\n", batteryCapacityMah);
+    LOG("Fuel gauge configured for %d mAh battery\n", batteryCapacityMah);
 }
 
 bool initPMU() {
@@ -27,10 +27,10 @@ bool initPMU() {
     pinMode(PMU_INT_PIN, INPUT_PULLUP);
 
     if (!g_pmu.init(Wire)) {
-        Serial.println("ERROR: PMU init failed!");
+        LOGLN("ERROR: PMU init failed!");
         return false;
     }
-    Serial.println("PMU initialized successfully");
+    LOGLN("PMU initialized successfully");
 
     // =========================================================================
     // USB/VBUS settings
@@ -121,15 +121,15 @@ bool initPMU() {
     calibrationPMU(detectBatteryCapacityMah());
 
     // Print diagnostics
-    Serial.println("\n=== Battery Diagnostics ===");
-    Serial.printf("Battery Voltage: %d mV\n", g_pmu.getBattVoltage());
-    Serial.printf("Battery Percent: %d%%\n", g_pmu.getBatteryPercent());
-    Serial.printf("Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
-    Serial.printf("VBUS In: %s\n", g_pmu.isVbusIn() ? "YES" : "NO");
-    Serial.println("===========================\n");
+    LOGLN("\n=== Battery Diagnostics ===");
+    LOG("Battery Voltage: %d mV\n", g_pmu.getBattVoltage());
+    LOG("Battery Percent: %d%%\n", g_pmu.getBatteryPercent());
+    LOG("Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
+    LOG("VBUS In: %s\n", g_pmu.isVbusIn() ? "YES" : "NO");
+    LOGLN("===========================\n");
 
     g_pmuPresent = true;
-    Serial.println("PMU configured for ULTRA-LOW POWER");
+    LOGLN("PMU configured for ULTRA-LOW POWER");
     return true;
 }
 
@@ -178,7 +178,7 @@ void pmuPrepareDeepSleep() {
     g_pmu.clearIrqStatus();
     g_pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);  // Button wake
 
-    Serial.println("PMU prepared for deep sleep");
+    LOGLN("PMU prepared for deep sleep");
 }
 
 void pmuRestoreFromSleep() {
@@ -191,5 +191,5 @@ void pmuRestoreFromSleep() {
 
     g_pmu.clearIrqStatus();
 
-    Serial.println("PMU restored from sleep");
+    LOGLN("PMU restored from sleep");
 }

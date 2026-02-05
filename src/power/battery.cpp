@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "../hardware_config.h"
 #include "pmu.h"
 #include "power_manager.h"
 #include "../ui/ui_common.h"
@@ -181,7 +182,7 @@ static int readCompensatedBatteryPercent() {
     // Read raw voltage from AXP2101
     int rawVoltage = g_pmu.getBattVoltage();
     if (rawVoltage <= 0) {
-        Serial.println("[BATT] WARNING: Failed to read voltage");
+        LOGLN("[BATT] WARNING: Failed to read voltage");
         return g_batteryPercent;  // Return last known value
     }
 
@@ -264,11 +265,11 @@ void initBatterySimulator() {
     // Read initial battery level
     g_batteryPercent = readCompensatedBatteryPercent();
 
-    Serial.printf("[BATT] Init: %d%% (%dmV raw)\n",
+    LOG("[BATT] Init: %d%% (%dmV raw)\n",
                   g_batteryPercent, g_batteryVoltageMv);
 
     if (g_pmuPresent) {
-        Serial.printf("[BATT] Charging: %s, VBUS: %s\n",
+        LOG("[BATT] Charging: %s, VBUS: %s\n",
                       g_pmu.isCharging() ? "YES" : "NO",
                       g_pmu.isVbusIn() ? "YES" : "NO");
     }
@@ -288,7 +289,7 @@ void updateBatteryPercent() {
 
     // Log changes
     if (newPercent != g_batteryPercent) {
-        Serial.printf("[BATT] %d%% -> %d%% (%dmV, ~%dmA load)\n",
+        LOG("[BATT] %d%% -> %d%% (%dmV, ~%dmA load)\n",
                       g_batteryPercent, newPercent,
                       g_batteryVoltageMv, estimateLoadCurrentMa());
     }
@@ -319,7 +320,7 @@ void updateChargingState() {
     g_isCharging = g_pmuPresent ? g_pmu.isVbusIn() : false;
 
     if (g_isCharging != wasCharging) {
-        Serial.printf("[BATT] Charging state: %s\n",
+        LOG("[BATT] Charging state: %s\n",
                       g_isCharging ? "STARTED" : "STOPPED");
 
         // Reset ALL battery tracking when charging state changes
@@ -429,41 +430,41 @@ void drawBatteryOverlay(bool force) {
 }
 
 void testBatteryDisplay() {
-    Serial.println("\n========== BATTERY TEST ==========");
+    LOGLN("\n========== BATTERY TEST ==========");
 
     if (g_pmuPresent) {
         int rawVoltage = g_pmu.getBattVoltage();
         int loadCurrent = estimateLoadCurrentMa();
         int compensatedVoltage = compensateVoltageForLoad(rawVoltage, loadCurrent);
 
-        Serial.printf("Raw Voltage: %d mV\n", rawVoltage);
-        Serial.printf("Est. Load Current: %d mA\n", loadCurrent);
-        Serial.printf("Compensated Voltage: %d mV\n", compensatedVoltage);
-        Serial.printf("Battery Percent: %d%%\n", g_batteryPercent);
-        Serial.printf("Fuel Gauge Reading: %d%%\n", g_pmu.getBatteryPercent());
-        Serial.printf("Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
-        Serial.printf("VBUS Present: %s\n", g_pmu.isVbusIn() ? "YES" : "NO");
-        Serial.printf("Battery Connected: %s\n", g_pmu.isBatteryConnect() ? "YES" : "NO");
+        LOG("Raw Voltage: %d mV\n", rawVoltage);
+        LOG("Est. Load Current: %d mA\n", loadCurrent);
+        LOG("Compensated Voltage: %d mV\n", compensatedVoltage);
+        LOG("Battery Percent: %d%%\n", g_batteryPercent);
+        LOG("Fuel Gauge Reading: %d%%\n", g_pmu.getBatteryPercent());
+        LOG("Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
+        LOG("VBUS Present: %s\n", g_pmu.isVbusIn() ? "YES" : "NO");
+        LOG("Battery Connected: %s\n", g_pmu.isBatteryConnect() ? "YES" : "NO");
 
         // Voltage reference table
-        Serial.println("\nVoltage Reference (open-circuit):");
-        Serial.println("  4.15V+ = 100%");
-        Serial.println("  4.00V  = ~85%");
-        Serial.println("  3.85V  = ~70%");
-        Serial.println("  3.75V  = ~50%");
-        Serial.println("  3.65V  = ~35%");
-        Serial.println("  3.50V  = ~20%");
-        Serial.println("  3.30V  = ~5%");
-        Serial.println("  3.00V  = 0%");
+        LOGLN("\nVoltage Reference (open-circuit):");
+        LOGLN("  4.15V+ = 100%");
+        LOGLN("  4.00V  = ~85%");
+        LOGLN("  3.85V  = ~70%");
+        LOGLN("  3.75V  = ~50%");
+        LOGLN("  3.65V  = ~35%");
+        LOGLN("  3.50V  = ~20%");
+        LOGLN("  3.30V  = ~5%");
+        LOGLN("  3.00V  = 0%");
     } else {
-        Serial.println("PMU not present");
+        LOGLN("PMU not present");
     }
 
-    Serial.printf("\nDisplayed: %d%%\n", g_batteryPercent);
+    LOG("\nDisplayed: %d%%\n", g_batteryPercent);
     s_drawnBatteryLevel = -1;
     drawBatteryOverlay(true);
 
-    Serial.println("===================================\n");
+    LOGLN("===================================\n");
 }
 
 // Get raw voltage for external use

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <Preferences.h>
 
+#include "../hardware_config.h"
 #include "../ble/ble_core.h"
 #include "../ble/ble_audio.h"
 #include "../system/state.h"
@@ -15,6 +16,7 @@
 constexpr uint32_t TIME_REQ_RETRY_MS     = 7000;
 constexpr uint8_t TIME_REQ_MAX_ATTEMPTS  = 5;
 constexpr uint32_t TIME_RESYNC_PERIOD_MS = 60000;
+constexpr uint32_t TIME_PERSIST_INTERVAL_MS = 15 * 60 * 1000;  // Limit NVS writes
 constexpr const char *TIME_PREF_NAMESPACE = "time";
 constexpr const char *TIME_PREF_EPOCH_KEY = "epoch";
 constexpr const char *TIME_PREF_MS_KEY    = "ms";
@@ -27,11 +29,18 @@ uint32_t g_lastTimeRequestMs = 0;
 uint32_t g_lastTimeSyncMs = 0;
 static Preferences g_timePrefs;
 static bool g_timePrefsReady = false;
+static uint32_t g_lastPersistMs = 0;
 
-static void persistTimeState() {
+static void persistTimeState(bool force) {
     if (!g_timePrefsReady || g_buildEpoch <= 0) return;
+    uint32_t now = millis();
+    if (!force && g_lastPersistMs > 0 &&
+        (now - g_lastPersistMs) < TIME_PERSIST_INTERVAL_MS) {
+        return;
+    }
     g_timePrefs.putLong64(TIME_PREF_EPOCH_KEY, static_cast<int64_t>(g_buildEpoch));
     g_timePrefs.putUInt(TIME_PREF_MS_KEY, g_lastTimeSyncMs);
+    g_lastPersistMs = now;
 }
 
 static void loadStoredTime() {
@@ -49,6 +58,7 @@ static void loadStoredTime() {
         g_buildEpoch += static_cast<time_t>((nowMs - savedMs) / 1000);
     }
 
+    g_lastPersistMs = nowMs;
     uiInvalidateClock();
 }
 
@@ -59,10 +69,11 @@ void timeSyncInit() {
     g_timeRequestAttempts = 0;
     g_lastTimeRequestMs = 0;
     g_lastTimeSyncMs = 0;
+    g_lastPersistMs = 0;
 
     g_timePrefsReady = g_timePrefs.begin(TIME_PREF_NAMESPACE, false);
     if (!g_timePrefsReady) {
-        Serial.println("WARN: Time prefs init failed; clock persistence disabled");
+        LOGLN("WARN: Time prefs init failed; clock persistence disabled");
     } else {
         loadStoredTime();
     }
@@ -74,7 +85,7 @@ void setCurrentEpoch(time_t epoch) {
     g_haveHostTime = true;
     g_lastTimeSyncMs = millis();
     uiInvalidateClock();
-    persistTimeState();
+    persistTimeState(false);
 }
 
 time_t getCurrentEpoch() {

@@ -45,6 +45,47 @@
 #define BUILD_DATE __DATE__ " " __TIME__
 
 // =============================================================================
+// PERIODIC DEBUG SUMMARY (POWER: gated by HOLLOW_DEBUG)
+// =============================================================================
+constexpr uint32_t SUMMARY_INTERVAL_MS = 10 * 60 * 1000;  // 10 minutes
+static uint32_t s_lastSummaryMs = 0;
+
+static const char *powerStateName(PowerState state) {
+    switch (state) {
+        case POWER_ACTIVE: return "ACTIVE";
+        case POWER_DIMMED: return "DIMMED";
+        case POWER_LIGHT_SLEEP: return "LIGHT_SLEEP";
+        case POWER_DEEP_SLEEP: return "DEEP_SLEEP";
+        default: return "UNKNOWN";
+    }
+}
+
+static void logPeriodicSummary() {
+#if HOLLOW_DEBUG
+    uint32_t now = millis();
+    if (s_lastSummaryMs == 0) {
+        s_lastSummaryMs = now;
+        return;
+    }
+    if (now - s_lastSummaryMs < SUMMARY_INTERVAL_MS) {
+        return;
+    }
+    s_lastSummaryMs = now;
+
+    LOG("\n[SUMMARY] Uptime: %lu s\n", now / 1000);
+    LOG("[SUMMARY] Power: %s idle=%lu ms cpu=%d MHz\n",
+        powerStateName(g_powerState), powerGetIdleTimeMs(), getCpuFrequencyMhz());
+    LOG("[SUMMARY] BLE: %s sleep=%s recording=%s charging=%s\n",
+        g_bleConnected ? "connected" : "advertising",
+        bleIsInSleepMode() ? "yes" : "no",
+        g_recordingInProgress ? "yes" : "no",
+        g_isCharging ? "yes" : "no");
+    LOG("[SUMMARY] Battery: %d%% (%dmV) heap=%d\n",
+        g_batteryPercent, g_batteryVoltageMv, ESP.getFreeHeap());
+#endif
+}
+
+// =============================================================================
 // SETUP
 // =============================================================================
 
@@ -60,28 +101,28 @@ void setup() {
     // 2. Serial for debugging (POWER: disabled in production via HOLLOW_DEBUG=0)
     // -------------------------------------------------------------------------
 #if HOLLOW_DEBUG
-    Serial.begin(115200);
+    LOG_INIT(115200);
     delay(50);  // Reduced from 100ms for faster boot
 
-    Serial.println("\n\n========================================");
-    Serial.println("  HOLLOW WATCH FIRMWARE v" FIRMWARE_VERSION);
-    Serial.println("  Build: " BUILD_DATE);
-    Serial.println("========================================\n");
+    LOGLN("\n\n========================================");
+    LOGLN("  HOLLOW WATCH FIRMWARE v" FIRMWARE_VERSION);
+    LOGLN("  Build: " BUILD_DATE);
+    LOGLN("========================================\n");
 #endif
 
     // Log reset reason
     esp_reset_reason_t resetReason = esp_reset_reason();
-    Serial.printf("Reset reason: %d ", resetReason);
+    LOG("Reset reason: %d ", resetReason);
     switch (resetReason) {
-        case ESP_RST_POWERON:   Serial.println("(Power on)"); break;
-        case ESP_RST_SW:        Serial.println("(Software reset)"); break;
-        case ESP_RST_PANIC:     Serial.println("(Panic/crash!)"); break;
-        case ESP_RST_INT_WDT:   Serial.println("(Interrupt watchdog!)"); break;
-        case ESP_RST_TASK_WDT:  Serial.println("(Task watchdog!)"); break;
-        case ESP_RST_WDT:       Serial.println("(Other watchdog)"); break;
-        case ESP_RST_DEEPSLEEP: Serial.println("(Deep sleep wake)"); break;
-        case ESP_RST_BROWNOUT:  Serial.println("(BROWNOUT - battery critical!)"); break;
-        default:                Serial.println("(Unknown)"); break;
+        case ESP_RST_POWERON:   LOGLN("(Power on)"); break;
+        case ESP_RST_SW:        LOGLN("(Software reset)"); break;
+        case ESP_RST_PANIC:     LOGLN("(Panic/crash!)"); break;
+        case ESP_RST_INT_WDT:   LOGLN("(Interrupt watchdog!)"); break;
+        case ESP_RST_TASK_WDT:  LOGLN("(Task watchdog!)"); break;
+        case ESP_RST_WDT:       LOGLN("(Other watchdog)"); break;
+        case ESP_RST_DEEPSLEEP: LOGLN("(Deep sleep wake)"); break;
+        case ESP_RST_BROWNOUT:  LOGLN("(BROWNOUT - battery critical!)"); break;
+        default:                LOGLN("(Unknown)"); break;
     }
 
     // Check wake reason
@@ -89,7 +130,7 @@ void setup() {
     bool wokeFromDeepSleep = (wakeReason == ESP_SLEEP_WAKEUP_EXT0 ||
                               wakeReason == ESP_SLEEP_WAKEUP_EXT1);
     if (wokeFromDeepSleep) {
-        Serial.println("Woke from deep sleep via touch/button");
+        LOGLN("Woke from deep sleep via touch/button");
     }
 
     // -------------------------------------------------------------------------
@@ -101,13 +142,13 @@ void setup() {
     // -------------------------------------------------------------------------
     // 4. PMU (controls power rails)
     // -------------------------------------------------------------------------
-    Serial.println("\n[INIT] PMU...");
+    LOGLN("\n[INIT] PMU...");
     g_pmuPresent = initPMU();
 
     // -------------------------------------------------------------------------
     // 5. Display
     // -------------------------------------------------------------------------
-    Serial.println("[INIT] Display...");
+    LOGLN("[INIT] Display...");
     uiInitDisplay();
 
     // Skip boot animation if waking from deep sleep (faster wake)
@@ -118,7 +159,7 @@ void setup() {
     // -------------------------------------------------------------------------
     // 6. State and timekeeping
     // -------------------------------------------------------------------------
-    Serial.println("[INIT] State...");
+    LOGLN("[INIT] State...");
     initState();
     timeSyncInit();
     initBatterySimulator();
@@ -129,13 +170,13 @@ void setup() {
     // -------------------------------------------------------------------------
     // 7. BLE (after PMU and display are ready)
     // -------------------------------------------------------------------------
-    Serial.println("[INIT] BLE...");
+    LOGLN("[INIT] BLE...");
     initBLE();
 
     // -------------------------------------------------------------------------
     // 8. Mic - Initialize I2S driver at boot for instant recording
     // -------------------------------------------------------------------------
-    Serial.println("[INIT] Mic (persistent I2S driver)...");
+    LOGLN("[INIT] Mic (persistent I2S driver)...");
     initMic();  // Install I2S driver once, never uninstall
 
     // -------------------------------------------------------------------------
@@ -150,9 +191,9 @@ void setup() {
 
     powerPrintDiagnostics();
 
-    Serial.println("\n[INIT] Setup complete - entering main loop");
-    Serial.printf("[INIT] Free heap: %d bytes\n", ESP.getFreeHeap());
-    Serial.println("========================================\n");
+    LOGLN("\n[INIT] Setup complete - entering main loop");
+    LOG("[INIT] Free heap: %d bytes\n", ESP.getFreeHeap());
+    LOGLN("========================================\n");
 }
 
 // =============================================================================
@@ -251,6 +292,11 @@ void loop() {
             drawBatteryOverlay(false);
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Periodic debug summary (10 min)
+    // -------------------------------------------------------------------------
+    logPeriodicSummary();
 
     // -------------------------------------------------------------------------
     // Frame pacing - Adaptive for smooth UI

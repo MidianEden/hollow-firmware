@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
+#include "../hardware_config.h"
 #include "../system/time_sync.h"
 #include "../system/state.h"
 #include "../ui/ui_answer.h"
@@ -62,5 +63,5 @@ void processPendingText() {
     currentState = ANSWER;
     resetAnswerScrollState();
     markActivity();
-    Serial.printf("[BLE] Received text response (%d chars) -> ANSWER\n", value.length());
+    LOG("[BLE] Received text response (%d chars) -> ANSWER\n", value.length());
 }

@@ -12,13 +12,15 @@
 #endif
 
 #if HOLLOW_DEBUG
-    #define LOG_INIT()     Serial.begin(115200)
-    #define LOG(fmt, ...)  Serial.printf(fmt, ##__VA_ARGS__)
+    #define LOG_INIT(...)  Serial.begin(__VA_ARGS__)
+    #define LOG(...)       Serial.printf(__VA_ARGS__)
     #define LOGLN(msg)     Serial.println(msg)
+    #define LOG_FLUSH()    Serial.flush()
 #else
-    #define LOG_INIT()     do {} while(0)
-    #define LOG(fmt, ...)  do {} while(0)
+    #define LOG_INIT(...)  do {} while(0)
+    #define LOG(...)       do {} while(0)
     #define LOGLN(msg)     do {} while(0)
+    #define LOG_FLUSH()    do {} while(0)
 #endif
 
 // T-Watch S3 Hardware Pin Definitions

@@ -47,6 +47,7 @@ constexpr uint32_t MAX_CONSECUTIVE_ERRORS = 10;        // Auto-stop after this m
 
 static bool s_i2sInstalled = false;
 static bool s_i2sRunning = false;
+static bool s_micPinsConfigured = false;
 
 // Recording state
 bool g_is_recording = false;
@@ -92,6 +93,7 @@ static void micGpioConfigure() {
     // Configure GPIO for I2S PDM operation
     gpio_set_direction((gpio_num_t)MIC_CLK_PIN, GPIO_MODE_OUTPUT);
     gpio_set_direction((gpio_num_t)MIC_DATA_PIN, GPIO_MODE_INPUT);
+    s_micPinsConfigured = true;
 }
 
 static void micGpioRelease() {
@@ -104,6 +106,7 @@ static void micGpioRelease() {
     gpio_set_direction((gpio_num_t)MIC_DATA_PIN, GPIO_MODE_INPUT);
     gpio_set_pull_mode((gpio_num_t)MIC_CLK_PIN, GPIO_FLOATING);
     gpio_set_pull_mode((gpio_num_t)MIC_DATA_PIN, GPIO_FLOATING);
+    s_micPinsConfigured = false;
 }
 
 // =============================================================================
@@ -112,26 +115,24 @@ static void micGpioRelease() {
 
 void initMic() {
     if (s_i2sInstalled) {
-        Serial.println("[MIC] Already installed");
+        LOGLN("[MIC] Already installed");
         return;
     }
 
-    Serial.println("[MIC] Installing I2S driver...");
-
-    // Configure GPIO first
-    micGpioConfigure();
+    LOGLN("[MIC] Installing I2S driver...");
 
     // Install I2S driver
     esp_err_t err = i2s_driver_install(I2S_NUM_0, &I2S_CONFIG, 0, nullptr);
     if (err != ESP_OK) {
-        Serial.printf("[MIC] ERROR: i2s_driver_install failed: %s\n", esp_err_to_name(err));
-        micGpioRelease();
+        LOG("[MIC] ERROR: i2s_driver_install failed: %s\n", esp_err_to_name(err));
         return;
     }
 
+    // Configure GPIO + pins
+    micGpioConfigure();
     err = i2s_set_pin(I2S_NUM_0, &I2S_PINS);
     if (err != ESP_OK) {
-        Serial.printf("[MIC] ERROR: i2s_set_pin failed: %s\n", esp_err_to_name(err));
+        LOG("[MIC] ERROR: i2s_set_pin failed: %s\n", esp_err_to_name(err));
         i2s_driver_uninstall(I2S_NUM_0);
         micGpioRelease();
         return;
@@ -139,28 +140,41 @@ void initMic() {
 
     // Stop immediately - we only start when actually recording
     i2s_stop(I2S_NUM_0);
+    // POWER: Release mic GPIOs while idle to reduce leakage
+    micGpioRelease();
 
     s_i2sInstalled = true;
     s_i2sRunning = false;
 
-    Serial.printf("[MIC] I2S driver installed (DMA: %d x %d samples)\n",
+    LOG("[MIC] I2S driver installed (DMA: %d x %d samples)\n",
                   DMA_BUF_COUNT, DMA_BUF_LEN);
 }
 
 void startMic() {
     // Driver should already be installed at boot
     if (!s_i2sInstalled) {
-        Serial.println("[MIC] WARNING: Driver not installed, initializing now");
+        LOGLN("[MIC] WARNING: Driver not installed, initializing now");
         initMic();
         if (!s_i2sInstalled) {
-            Serial.println("[MIC] ERROR: Failed to init");
+            LOGLN("[MIC] ERROR: Failed to init");
             return;
         }
     }
 
     if (s_i2sRunning) {
-        Serial.println("[MIC] Already running");
+        LOGLN("[MIC] Already running");
         return;
+    }
+
+    // Ensure GPIOs/pins are configured before starting
+    if (!s_micPinsConfigured) {
+        micGpioConfigure();
+        esp_err_t pinErr = i2s_set_pin(I2S_NUM_0, &I2S_PINS);
+        if (pinErr != ESP_OK) {
+            LOG("[MIC] ERROR: i2s_set_pin failed: %s\n", esp_err_to_name(pinErr));
+            micGpioRelease();
+            return;
+        }
     }
 
     // Reset state tracking
@@ -175,7 +189,7 @@ void startMic() {
     // Start I2S - instant since driver is already installed
     esp_err_t err = i2s_start(I2S_NUM_0);
     if (err != ESP_OK) {
-        Serial.printf("[MIC] ERROR: i2s_start failed: %s\n", esp_err_to_name(err));
+        LOG("[MIC] ERROR: i2s_start failed: %s\n", esp_err_to_name(err));
         return;
     }
 
@@ -184,7 +198,7 @@ void startMic() {
     // Notify BLE to use fast connection parameters
     bleEnterActiveTransfer();
 
-    Serial.println("[MIC] Started - recording active");
+    LOGLN("[MIC] Started - recording active");
 }
 
 void stopMic() {
@@ -194,10 +208,12 @@ void stopMic() {
 
     i2s_stop(I2S_NUM_0);
     s_i2sRunning = false;
+    // POWER: Release mic GPIOs when idle to reduce leakage
+    micGpioRelease();
 
     // Calculate recording stats
     uint32_t durationMs = millis() - s_recordingStartMs;
-    Serial.printf("[MIC] Stopped after %lu ms, %lu chunks sent\n",
+    LOG("[MIC] Stopped after %lu ms, %lu chunks sent\n",
                   durationMs, s_totalChunksSent);
 
     // Notify BLE to return to low-power connection parameters
@@ -221,7 +237,7 @@ void deinitMic() {
     // Release GPIO to minimize leakage current
     micGpioRelease();
 
-    Serial.println("[MIC] I2S driver uninstalled (shutdown only)");
+    LOGLN("[MIC] I2S driver uninstalled (shutdown only)");
 }
 
 bool isMicRunning() {
@@ -278,7 +294,7 @@ void updateRecording() {
     // Timeout protection: Max recording duration (60 seconds)
     // -------------------------------------------------------------------------
     if (now - s_recordingStartMs > RECORDING_MAX_DURATION_MS) {
-        Serial.println("[MIC] Max duration reached - auto-stopping");
+        LOGLN("[MIC] Max duration reached - auto-stopping");
         stopRecording();
         return;
     }
@@ -287,7 +303,7 @@ void updateRecording() {
     // BLE connection check - auto-stop if disconnected
     // -------------------------------------------------------------------------
     if (!bleIsConnected()) {
-        Serial.println("[MIC] BLE disconnected - stopping recording");
+        LOGLN("[MIC] BLE disconnected - stopping recording");
         stopRecording();
         return;
     }
@@ -309,7 +325,7 @@ void updateRecording() {
     if (err != ESP_OK) {
         s_consecutiveErrors++;
         if (s_consecutiveErrors % 5 == 0) {  // Log every 5th error
-            Serial.printf("[MIC] i2s_read error: %s\n", esp_err_to_name(err));
+            LOG("[MIC] i2s_read error: %s\n", esp_err_to_name(err));
         }
         return;
     }

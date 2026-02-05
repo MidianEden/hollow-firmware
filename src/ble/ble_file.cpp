@@ -3,12 +3,13 @@
 #include <Arduino.h>
 #include <string>
 
+#include "../hardware_config.h"
 #include "../audio/audio_i2s.h"
 
 void sendRecordedFileOverBle(BLECharacteristic *pChar) {
     if (!pChar) return;
     if (g_recorded_adpcm.empty()) {
-        Serial.println("No recorded audio to send.");
+        LOGLN("No recorded audio to send.");
         return;
     }
 
@@ -32,7 +33,7 @@ void sendRecordedFileOverBle(BLECharacteristic *pChar) {
         offset += toSend;
         vTaskDelay(5 / portTICK_PERIOD_MS);
     }
-    Serial.printf("Sent %u bytes over BLE file characteristic\n", (unsigned)total_len);
+    LOG("Sent %u bytes over BLE file characteristic\n", (unsigned)total_len);
 }
 
 class FileCharCallbacks : public BLECharacteristicCallbacks {

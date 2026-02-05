@@ -13,6 +13,7 @@
 #include <esp_gap_ble_api.h>
 #include <esp_gatt_common_api.h>
 
+#include "../hardware_config.h"
 #include "../system/state.h"
 #include "../system/time_sync.h"
 #include "../audio/audio_i2s.h"
@@ -127,18 +128,18 @@ static void requestConnectionParams(bool activeTransfer) {
         params.max_int = BLE_CONN_INT_MAX_ACTIVE;
         params.latency = BLE_LATENCY_ACTIVE;
         params.timeout = BLE_TIMEOUT_ACTIVE;
-        Serial.println("[BLE] -> ACTIVE params (fast transfer)");
+        LOGLN("[BLE] -> ACTIVE params (fast transfer)");
     } else {
         params.min_int = BLE_CONN_INT_MIN_NORMAL;
         params.max_int = BLE_CONN_INT_MAX_NORMAL;
         params.latency = BLE_LATENCY_NORMAL;
         params.timeout = BLE_TIMEOUT_NORMAL;
-        Serial.println("[BLE] -> NORMAL params (low power)");
+        LOGLN("[BLE] -> NORMAL params (low power)");
     }
 
     esp_err_t err = esp_ble_gap_update_conn_params(&params);
     if (err != ESP_OK) {
-        Serial.printf("[BLE] Param update failed: %s\n", esp_err_to_name(err));
+        LOG("[BLE] Param update failed: %s\n", esp_err_to_name(err));
         s_connectionErrors++;
     }
 
@@ -161,7 +162,7 @@ class ServerCallbacks : public BLEServerCallbacks {
         s_notifyErrors = 0;
         s_connectionErrors = 0;
 
-        Serial.printf("[BLE] Connected, conn_id=%d\n", g_connId);
+        LOG("[BLE] Connected, conn_id=%d\n", g_connId);
 
         // Notify power manager
         powerHandleBLEConnect();
@@ -183,7 +184,7 @@ class ServerCallbacks : public BLEServerCallbacks {
         s_lastParamUpdateMs = 0;
         memset(g_peerBda, 0, sizeof(g_peerBda));  // Clear peer address
 
-        Serial.printf("[BLE] Disconnected (errors: notify=%lu, conn=%lu)\n",
+        LOG("[BLE] Disconnected (errors: notify=%lu, conn=%lu)\n",
                       s_notifyErrors, s_connectionErrors);
 
         // Stop any ongoing recording
@@ -203,7 +204,7 @@ class ServerCallbacks : public BLEServerCallbacks {
 
         // Restart advertising immediately
         BLEDevice::startAdvertising();
-        Serial.println("[BLE] Advertising restarted");
+        LOGLN("[BLE] Advertising restarted");
     }
 };
 
@@ -212,7 +213,7 @@ class ServerCallbacks : public BLEServerCallbacks {
 // -----------------------------------------------------------------------------
 
 void initBLE() {
-    Serial.println("[BLE] Initializing...");
+    LOGLN("[BLE] Initializing...");
 
     BLEDevice::init(DEVICE_NAME);
 
@@ -237,7 +238,7 @@ void initBLE() {
     // Default/scan power
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_N0);
 
-    Serial.println("[BLE] TX power: ADV=0dBm, CONN=+3dBm");
+    LOGLN("[BLE] TX power: ADV=0dBm, CONN=+3dBm");
 
     // Create server
     g_server = BLEDevice::createServer();
@@ -300,7 +301,7 @@ void initBLE() {
     // Start advertising
     BLEDevice::startAdvertising();
 
-    Serial.printf("[BLE] Initialized: MTU=%d, ADV=%d-%dms (normal mode)\n",
+    LOG("[BLE] Initialized: MTU=%d, ADV=%d-%dms (normal mode)\n",
                   BLE_MTU_SIZE,
                   (BLE_ADV_INT_MIN_NORMAL * 625) / 1000,
                   (BLE_ADV_INT_MAX_NORMAL * 625) / 1000);
@@ -388,7 +389,7 @@ void bleEnterSleepMode() {
 
         esp_err_t err = esp_ble_gap_update_conn_params(&params);
         if (err == ESP_OK) {
-            Serial.println("[BLE] -> SLEEP params (250-500ms interval)");
+            LOGLN("[BLE] -> SLEEP params (250-500ms interval)");
         }
     }
 
@@ -398,7 +399,7 @@ void bleEnterSleepMode() {
         adv->setMinInterval(BLE_ADV_INT_MIN_SLEEP);
         adv->setMaxInterval(BLE_ADV_INT_MAX_SLEEP);
         BLEDevice::startAdvertising();
-        Serial.println("[BLE] -> SLEEP advertising (1-2s interval)");
+        LOGLN("[BLE] -> SLEEP advertising (1-2s interval)");
     }
 }
 
@@ -417,7 +418,7 @@ void bleExitSleepMode() {
 
         esp_err_t err = esp_ble_gap_update_conn_params(&params);
         if (err == ESP_OK) {
-            Serial.println("[BLE] -> NORMAL params (75-150ms interval)");
+            LOGLN("[BLE] -> NORMAL params (75-150ms interval)");
         }
     }
 
@@ -427,7 +428,7 @@ void bleExitSleepMode() {
         adv->setMinInterval(BLE_ADV_INT_MIN_NORMAL);
         adv->setMaxInterval(BLE_ADV_INT_MAX_NORMAL);
         BLEDevice::startAdvertising();
-        Serial.println("[BLE] -> NORMAL advertising (500-1000ms interval)");
+        LOGLN("[BLE] -> NORMAL advertising (500-1000ms interval)");
     }
 }
 

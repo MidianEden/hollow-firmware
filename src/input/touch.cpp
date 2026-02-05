@@ -177,7 +177,7 @@ void handleTouch() {
             g_scrollY += dy;
 
             // DEBUG: Print scroll values before clamping
-            Serial.printf("[TOUCH] dy=%d scrollY=%d->%d maxScroll=%d\n",
+            LOG("[TOUCH] dy=%d scrollY=%d->%d maxScroll=%d\n",
                           dy, prevScroll, g_scrollY, g_maxScroll);
 
             if (g_scrollY < 0) g_scrollY = 0;

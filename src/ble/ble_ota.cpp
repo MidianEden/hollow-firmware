@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../hardware_config.h"
 #include "../system/state.h"
 #include "../system/sleep.h"
 
@@ -67,7 +68,7 @@ static void maybeSendProgress() {
 static void finalizeOta() {
     bool ok = Update.end(true);
     if (!ok) {
-        Serial.println("[OTA] Finalize failed");
+        LOGLN("[OTA] Finalize failed");
         Update.printError(Serial);
         resetOtaState("ERR:END");
         return;
@@ -95,7 +96,7 @@ static bool startOta(uint32_t size, const std::string &md5) {
 
     Update.abort();
     if (!Update.begin(size)) {
-        Serial.println("[OTA] Update.begin failed");
+        LOGLN("[OTA] Update.begin failed");
         Update.printError(Serial);
         sendStatus("ERR:BEGIN");
         return false;
@@ -139,7 +140,7 @@ static bool handleBeginMessage(const std::string &value) {
         return false;
     }
 
-    Serial.printf("[OTA] BEGIN size=%lu md5=%s\n", parsed, md5.empty() ? "(none)" : md5.c_str());
+    LOG("[OTA] BEGIN size=%lu md5=%s\n", parsed, md5.empty() ? "(none)" : md5.c_str());
     return startOta(static_cast<uint32_t>(parsed), md5);
 }
 
@@ -149,7 +150,7 @@ static void handleDataChunk(const std::string &value) {
     size_t len = value.size();
     size_t written = Update.write(reinterpret_cast<uint8_t*>(const_cast<char*>(value.data())), len);
     if (written != len) {
-        Serial.println("[OTA] Write failed");
+        LOGLN("[OTA] Write failed");
         Update.printError(Serial);
         resetOtaState("ERR:WRITE");
         return;
@@ -185,7 +186,7 @@ class OtaCharCallbacks : public BLECharacteristicCallbacks {
         }
 
         if (value == "ABORT") {
-            Serial.println("[OTA] Abort requested");
+            LOGLN("[OTA] Abort requested");
             resetOtaState("ERR:ABORT");
             return;
         }
@@ -202,7 +203,7 @@ BLECharacteristicCallbacks *createOtaCallbacks() {
 
 void otaHandleDisconnected() {
     if (g_otaActive) {
-        Serial.println("[OTA] Disconnected mid-transfer");
+        LOGLN("[OTA] Disconnected mid-transfer");
         resetOtaState(nullptr);
     }
     g_restartPending = false;
@@ -212,12 +213,12 @@ void otaHandleDisconnected() {
 void otaLoop() {
     uint32_t now = millis();
     if (g_restartPending && now >= g_restartAtMs) {
-        Serial.println("[OTA] Restarting after update");
+        LOGLN("[OTA] Restarting after update");
         ESP.restart();
     }
 
     if (g_otaActive && g_lastChunkMs > 0 && (now - g_lastChunkMs) > OTA_CHUNK_TIMEOUT_MS) {
-        Serial.println("[OTA] Timeout waiting for next chunk");
+        LOGLN("[OTA] Timeout waiting for next chunk");
         resetOtaState("ERR:TIMEOUT");
     }
 }

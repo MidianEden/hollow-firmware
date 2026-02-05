@@ -83,6 +83,8 @@ static void displaySetActive() {
 static void displaySetDimmed() {
     // POWER: Reduce CPU frequency when dimmed (80MHz is enough for basic UI)
     setCpuFrequencyMhz(80);
+    pmuEnableDisplay();
+    gfx.wakeup();
     gfx.setBrightness(BRIGHTNESS_DIM);
 }
 
@@ -112,7 +114,7 @@ static bool configurePowerManagement() {
 
     esp_err_t err = esp_pm_configure(&pm_config);
     if (err != ESP_OK) {
-        Serial.printf("[POWER] PM configure failed: %s\n", esp_err_to_name(err));
+        LOG("[POWER] PM configure failed: %s\n", esp_err_to_name(err));
         return false;
     }
 
@@ -120,11 +122,11 @@ static bool configurePowerManagement() {
     // (e.g., during audio recording or BLE transfers)
     err = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "cpu_work", &s_cpuLock);
     if (err != ESP_OK) {
-        Serial.printf("[POWER] Lock create failed: %s\n", esp_err_to_name(err));
+        LOG("[POWER] Lock create failed: %s\n", esp_err_to_name(err));
         return false;
     }
 
-    Serial.printf("[POWER] PM configured: %d-%dMHz, light_sleep=ON\n",
+    LOG("[POWER] PM configured: %d-%dMHz, light_sleep=ON\n",
                   CPU_FREQ_MIN, CPU_FREQ_MAX);
     return true;
 }
@@ -142,7 +144,7 @@ static void configureWakeSources() {
     // PMU interrupt - GPIO 21, active LOW (power button, charger events)
     gpio_wakeup_enable((gpio_num_t)PMU_INT_PIN, GPIO_INTR_LOW_LEVEL);
 
-    Serial.println("[POWER] Wake sources: GPIO16(touch), GPIO21(PMU)");
+    LOGLN("[POWER] Wake sources: GPIO16(touch), GPIO21(PMU)");
 }
 
 // =============================================================================
@@ -155,8 +157,8 @@ static void checkBatteryHealth() {
     int voltage = g_pmu.getBattVoltage();
 
     if (voltage < SHUTDOWN_THRESHOLD_MV && !g_isCharging) {
-        Serial.printf("[POWER] CRITICAL: Battery %dmV - forcing shutdown!\n", voltage);
-        Serial.flush();
+        LOG("[POWER] CRITICAL: Battery %dmV - forcing shutdown!\n", voltage);
+        LOG_FLUSH();
 
         // Give user visual feedback if possible
         gfx.fillScreen(TFT_RED);
@@ -172,7 +174,7 @@ static void checkBatteryHealth() {
         // Log warning but don't shutdown yet
         static uint32_t lastWarnMs = 0;
         if (millis() - lastWarnMs > 30000) {
-            Serial.printf("[POWER] WARNING: Battery low %dmV\n", voltage);
+            LOG("[POWER] WARNING: Battery low %dmV\n", voltage);
             lastWarnMs = millis();
         }
     }
@@ -183,13 +185,13 @@ static void checkBatteryHealth() {
 // =============================================================================
 
 bool powerManagerInit() {
-    Serial.println("\n[POWER] Initializing power manager...");
+    LOGLN("\n[POWER] Initializing power manager...");
 
     // 1. Ensure WiFi is completely disabled
     esp_err_t err = esp_wifi_stop();
     if (err == ESP_OK) {
         esp_wifi_deinit();
-        Serial.println("[POWER] WiFi disabled");
+        LOGLN("[POWER] WiFi disabled");
     }
 
     // 2. Explicitly disable unused peripherals
@@ -204,7 +206,7 @@ bool powerManagerInit() {
     pinMode(RADIO_SCLK_PIN, INPUT);
     pinMode(RADIO_DIO1_PIN, INPUT);
     pinMode(RADIO_BUSY_PIN, INPUT);
-    Serial.println("[POWER] LoRa module disabled (held in reset)");
+    LOGLN("[POWER] LoRa module disabled (held in reset)");
 
     // Accelerometer - not used, set interrupt pin as input
     pinMode(ACCEL_INT_PIN, INPUT);
@@ -214,12 +216,12 @@ bool powerManagerInit() {
 
     // 3. Set initial CPU frequency
     setCpuFrequencyMhz(CPU_FREQ_MAX);
-    Serial.printf("[POWER] CPU set to %dMHz\n", getCpuFrequencyMhz());
+    LOG("[POWER] CPU set to %dMHz\n", getCpuFrequencyMhz());
 
     // 3. Configure ESP-IDF power management for automatic light sleep
     s_pmConfigured = configurePowerManagement();
     if (!s_pmConfigured) {
-        Serial.println("[POWER] WARNING: PM not configured - no auto light sleep!");
+        LOGLN("[POWER] WARNING: PM not configured - no auto light sleep!");
     }
 
     // 4. Configure wake sources
@@ -229,7 +231,7 @@ bool powerManagerInit() {
     s_lastActivityMs = millis();
     g_powerState = POWER_ACTIVE;
 
-    Serial.println("[POWER] Power manager initialized\n");
+    LOGLN("[POWER] Power manager initialized\n");
     return s_pmConfigured;
 }
 
@@ -254,20 +256,20 @@ void powerMarkActivity() {
         g_dimmed = false;
         displaySetActive();
         s_lightSleepEnteredMs = 0;
-        Serial.println("[POWER] -> ACTIVE (user activity)");
+        LOGLN("[POWER] -> ACTIVE (user activity)");
     }
 }
 
 void powerHandleBLEConnect() {
     s_bleConnected = true;
     powerMarkActivity();
-    Serial.println("[POWER] BLE connected");
+    LOGLN("[POWER] BLE connected");
 }
 
 void powerHandleBLEDisconnect() {
     s_bleConnected = false;
     // Don't change power state - let normal timeout handle it
-    Serial.println("[POWER] BLE disconnected");
+    LOGLN("[POWER] BLE disconnected");
 }
 
 // =============================================================================
@@ -299,15 +301,6 @@ bool powerUpdate() {
         releaseCpuLock();  // Allow auto light sleep
     }
 
-    // Don't transition while charging (user might be watching)
-    if (g_isCharging && g_powerState == POWER_LIGHT_SLEEP) {
-        g_powerState = POWER_DIMMED;
-        g_dimmed = true;
-        g_sleeping = false;
-        displaySetDimmed();
-        return true;
-    }
-
     // State machine
     switch (g_powerState) {
         case POWER_ACTIVE:
@@ -316,12 +309,12 @@ bool powerUpdate() {
                 g_dimmed = true;  // Sync legacy global
                 g_sleeping = false;
                 displaySetDimmed();
-                Serial.println("[POWER] -> DIMMED");
+                LOGLN("[POWER] -> DIMMED");
             }
             break;
 
         case POWER_DIMMED:
-            if (idleMs >= TIMEOUT_LIGHT_SLEEP_MS) {
+            if (idleMs >= TIMEOUT_LIGHT_SLEEP_MS && !g_isCharging) {
                 g_powerState = POWER_LIGHT_SLEEP;
                 g_sleeping = true;  // Sync legacy global
                 g_dimmed = false;
@@ -329,16 +322,24 @@ bool powerUpdate() {
                 s_lightSleepEnteredMs = now;
                 // POWER: Enter BLE sleep mode (slower polling, not disabled)
                 bleEnterSleepMode();
-                Serial.println("[POWER] -> LIGHT_SLEEP");
+                LOGLN("[POWER] -> LIGHT_SLEEP");
             }
             break;
 
         case POWER_LIGHT_SLEEP:
+            if (g_isCharging) {
+                g_powerState = POWER_DIMMED;
+                g_dimmed = true;
+                g_sleeping = false;
+                displaySetDimmed();
+                bleExitSleepMode();
+                break;
+            }
             // Check if we should go to deep sleep
             if (TIMEOUT_DEEP_SLEEP_MS > 0 && !g_isCharging && !s_bleConnected) {
                 uint32_t lightSleepDuration = now - s_lightSleepEnteredMs;
                 if (lightSleepDuration >= TIMEOUT_DEEP_SLEEP_MS) {
-                    Serial.println("[POWER] -> DEEP_SLEEP");
+                    LOGLN("[POWER] -> DEEP_SLEEP");
                     powerForceDeepSleep();  // Does not return
                 }
             }
@@ -377,8 +378,8 @@ void powerForceLightSleep() {
 }
 
 void powerForceDeepSleep() {
-    Serial.println("[POWER] Entering deep sleep...");
-    Serial.flush();
+    LOGLN("[POWER] Entering deep sleep...");
+    LOG_FLUSH();
 
     // 1. Stop all audio
     if (isMicRunning()) stopMic();
@@ -428,8 +429,8 @@ void powerForceDeepSleep() {
     // IR transmitter (not used)
     rtc_gpio_isolate((gpio_num_t)IR_TX_PIN);         // GPIO 2
 
-    Serial.println("[POWER] Deep sleep now - wake on touch/button");
-    Serial.flush();
+    LOGLN("[POWER] Deep sleep now - wake on touch/button");
+    LOG_FLUSH();
 
     esp_deep_sleep_start();
     // Never returns - device resets on wake, BLE will reinit automatically
@@ -500,7 +501,7 @@ void handleWakeFromLightSleep() {
         s_maxWakeTimeUs = wakeTimeUs;
     }
 
-    Serial.printf("[POWER] WAKE #%lu: %lu us (%.1f ms) -> HOME%s\n",
+    LOG("[POWER] WAKE #%lu: %lu us (%.1f ms) -> HOME%s\n",
                   s_wakeCount, wakeTimeUs, wakeTimeUs / 1000.0f,
                   (wakeTimeUs > WAKE_MAX_MS * 1000) ? " [SLOW!]" : "");
 }
@@ -534,56 +535,56 @@ uint32_t powerGetIdleTimeMs() {
 // =============================================================================
 
 void powerPrintDiagnostics() {
-    Serial.println("\n========== POWER DIAGNOSTICS ==========");
+    LOGLN("\n========== POWER DIAGNOSTICS ==========");
 
     // CPU info
-    Serial.printf("CPU Frequency: %d MHz (range: %d-%d)\n",
+    LOG("CPU Frequency: %d MHz (range: %d-%d)\n",
                   getCpuFrequencyMhz(), CPU_FREQ_MIN, CPU_FREQ_MAX);
-    Serial.printf("Power State: %d ", g_powerState);
+    LOG("Power State: %d ", g_powerState);
     switch(g_powerState) {
-        case POWER_ACTIVE: Serial.println("(ACTIVE)"); break;
-        case POWER_DIMMED: Serial.println("(DIMMED)"); break;
-        case POWER_LIGHT_SLEEP: Serial.println("(LIGHT_SLEEP)"); break;
-        case POWER_DEEP_SLEEP: Serial.println("(DEEP_SLEEP)"); break;
+        case POWER_ACTIVE: LOGLN("(ACTIVE)"); break;
+        case POWER_DIMMED: LOGLN("(DIMMED)"); break;
+        case POWER_LIGHT_SLEEP: LOGLN("(LIGHT_SLEEP)"); break;
+        case POWER_DEEP_SLEEP: LOGLN("(DEEP_SLEEP)"); break;
     }
 
-    Serial.printf("Idle Time: %lu ms\n", powerGetIdleTimeMs());
-    Serial.printf("BLE Connected: %s\n", s_bleConnected ? "YES" : "NO");
-    Serial.printf("Recording: %s\n", g_recordingInProgress ? "YES" : "NO");
-    Serial.printf("Charging: %s\n", g_isCharging ? "YES" : "NO");
-    Serial.printf("PM Configured: %s\n", s_pmConfigured ? "YES" : "NO");
-    Serial.printf("CPU Lock Held: %s\n", s_cpuLockHeld ? "YES" : "NO");
+    LOG("Idle Time: %lu ms\n", powerGetIdleTimeMs());
+    LOG("BLE Connected: %s\n", s_bleConnected ? "YES" : "NO");
+    LOG("Recording: %s\n", g_recordingInProgress ? "YES" : "NO");
+    LOG("Charging: %s\n", g_isCharging ? "YES" : "NO");
+    LOG("PM Configured: %s\n", s_pmConfigured ? "YES" : "NO");
+    LOG("CPU Lock Held: %s\n", s_cpuLockHeld ? "YES" : "NO");
 
     // Wake timing stats
-    Serial.println("\nWake Performance:");
-    Serial.printf("  Wake Count: %lu\n", s_wakeCount);
-    Serial.printf("  Last Wake: %.1f ms\n", s_lastWakeTimeUs / 1000.0f);
-    Serial.printf("  Max Wake: %.1f ms\n", s_maxWakeTimeUs / 1000.0f);
-    Serial.printf("  Target: <%lu ms\n", WAKE_TARGET_MS);
+    LOGLN("\nWake Performance:");
+    LOG("  Wake Count: %lu\n", s_wakeCount);
+    LOG("  Last Wake: %.1f ms\n", s_lastWakeTimeUs / 1000.0f);
+    LOG("  Max Wake: %.1f ms\n", s_maxWakeTimeUs / 1000.0f);
+    LOG("  Target: <%lu ms\n", WAKE_TARGET_MS);
 
     // PMU rails
     if (g_pmuPresent) {
-        Serial.println("\nPMU Power Rails:");
-        Serial.printf("  ALDO1: %s\n", g_pmu.isEnableALDO1() ? "ON" : "off");
-        Serial.printf("  ALDO2: %s (backlight)\n", g_pmu.isEnableALDO2() ? "ON" : "off");
-        Serial.printf("  ALDO3: %s (display+touch)\n", g_pmu.isEnableALDO3() ? "ON" : "off");
-        Serial.printf("  ALDO4: %s\n", g_pmu.isEnableALDO4() ? "ON" : "off");
-        Serial.printf("  BLDO1: %s\n", g_pmu.isEnableBLDO1() ? "ON" : "off");
-        Serial.printf("  BLDO2: %s (haptics)\n", g_pmu.isEnableBLDO2() ? "ON" : "off");
-        Serial.printf("  DLDO1: %s (speaker)\n", g_pmu.isEnableDLDO1() ? "ON" : "off");
-        Serial.printf("  DLDO2: %s\n", g_pmu.isEnableDLDO2() ? "ON" : "off");
-        Serial.printf("  DC2: %s\n", g_pmu.isEnableDC2() ? "ON" : "off");
-        Serial.printf("  DC3: %s (GPS)\n", g_pmu.isEnableDC3() ? "ON" : "off");
-        Serial.printf("  DC4: %s\n", g_pmu.isEnableDC4() ? "ON" : "off");
-        Serial.printf("  DC5: %s\n", g_pmu.isEnableDC5() ? "ON" : "off");
+        LOGLN("\nPMU Power Rails:");
+        LOG("  ALDO1: %s\n", g_pmu.isEnableALDO1() ? "ON" : "off");
+        LOG("  ALDO2: %s (backlight)\n", g_pmu.isEnableALDO2() ? "ON" : "off");
+        LOG("  ALDO3: %s (display+touch)\n", g_pmu.isEnableALDO3() ? "ON" : "off");
+        LOG("  ALDO4: %s\n", g_pmu.isEnableALDO4() ? "ON" : "off");
+        LOG("  BLDO1: %s\n", g_pmu.isEnableBLDO1() ? "ON" : "off");
+        LOG("  BLDO2: %s (haptics)\n", g_pmu.isEnableBLDO2() ? "ON" : "off");
+        LOG("  DLDO1: %s (speaker)\n", g_pmu.isEnableDLDO1() ? "ON" : "off");
+        LOG("  DLDO2: %s\n", g_pmu.isEnableDLDO2() ? "ON" : "off");
+        LOG("  DC2: %s\n", g_pmu.isEnableDC2() ? "ON" : "off");
+        LOG("  DC3: %s (GPS)\n", g_pmu.isEnableDC3() ? "ON" : "off");
+        LOG("  DC4: %s\n", g_pmu.isEnableDC4() ? "ON" : "off");
+        LOG("  DC5: %s\n", g_pmu.isEnableDC5() ? "ON" : "off");
 
-        Serial.println("\nBattery:");
-        Serial.printf("  Voltage: %d mV\n", g_pmu.getBattVoltage());
-        Serial.printf("  Percent: %d%%\n", g_pmu.getBatteryPercent());
-        Serial.printf("  Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
+        LOGLN("\nBattery:");
+        LOG("  Voltage: %d mV\n", g_pmu.getBattVoltage());
+        LOG("  Percent: %d%%\n", g_pmu.getBatteryPercent());
+        LOG("  Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
     }
 
-    Serial.println("========================================\n");
+    LOGLN("========================================\n");
 }
 
 float powerEstimateCurrentMa() {

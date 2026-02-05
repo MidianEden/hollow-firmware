@@ -1,5 +1,6 @@
 #include "state.h"
 
+#include "../hardware_config.h"
 #include "../audio/audio_i2s.h"
 #include "../audio/audio_adpcm.h"
 #include "../ble/ble_audio.h"
@@ -62,11 +63,11 @@ void stopRecording() {
         currentState = WAITING_ANSWER;
         g_waitingStartMs = millis();  // Start timeout clock
         bleSendControlMessage("END");
-        Serial.println("[STATE] -> WAITING_ANSWER (timeout in 30s)");
+        LOGLN("[STATE] -> WAITING_ANSWER (timeout in 30s)");
     } else {
         currentState = IDLE;
         g_waitingStartMs = 0;
-        Serial.println("[STATE] -> IDLE (BLE not ready)");
+        LOGLN("[STATE] -> IDLE (BLE not ready)");
     }
 }
 
@@ -83,7 +84,7 @@ void checkWaitingTimeout() {
 
     uint32_t elapsed = millis() - g_waitingStartMs;
     if (elapsed >= WAITING_ANSWER_TIMEOUT_MS) {
-        Serial.printf("[STATE] Waiting timeout after %lu ms -> IDLE\n", elapsed);
+        LOG("[STATE] Waiting timeout after %lu ms -> IDLE\n", elapsed);
         currentState = IDLE;
         g_waitingStartMs = 0;
         markActivity();

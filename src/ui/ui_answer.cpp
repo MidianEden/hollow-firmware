@@ -1,5 +1,6 @@
 #include "ui_answer.h"
 
+#include "../hardware_config.h"
 #include "../ui/ui_common.h"
 #include "../power/battery.h"
 #include "../system/state.h"
@@ -97,7 +98,7 @@ void drawFullAnswerScreen() {
     g_maxScroll = max(0, totalHeight - SCREEN_H + margin * 2);
 
     // DEBUG: Print scroll state to help diagnose scrolling issues
-    Serial.printf("[SCROLL] textLen=%d totalHeight=%d maxScroll=%d scrollY=%d\n",
+    LOG("[SCROLL] textLen=%d totalHeight=%d maxScroll=%d scrollY=%d\n",
                   text.length(), totalHeight, g_maxScroll, g_scrollY);
 
     render(true);
