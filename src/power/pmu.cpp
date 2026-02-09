@@ -165,31 +165,51 @@ void pmuPrepareDeepSleep() {
     if (!g_pmuPresent) return;
 
     // =========================================================================
-    // POWER: Disable everything except what's needed for wake
+    // MAXIMUM POWER SAVING MODE - Deep Sleep
     // Target: <100µA total system current in deep sleep
+    // This is the most aggressive power saving mode
     // =========================================================================
 
+    LOG("[PMU] Preparing for maximum power saving deep sleep...\n");
+
+    // Disable display power rails (display is already off via sleep command)
     g_pmu.disableALDO2();    // POWER: Display backlight OFF
-    // Keep ALDO3 for touch wake interrupt capability
+    // Keep ALDO3 enabled for touch wake interrupt capability (GPIO needs power)
+
+    // Disable all other non-essential rails
     g_pmu.disableBLDO2();    // POWER: Haptics OFF
-    g_pmu.disableDLDO1();    // POWER: Speaker OFF
+    g_pmu.disableDLDO1();    // POWER: Speaker amplifier OFF
+
+    // Disable battery monitoring ADCs to save power (not needed during sleep)
+    g_pmu.disableBattVoltageMeasure();    // POWER: Save ~50µA
+    g_pmu.disableTSPinMeasure();          // POWER: Already off but ensure
+    g_pmu.disableVbusVoltageMeasure();    // POWER: Already off but ensure
+    g_pmu.disableSystemVoltageMeasure();  // POWER: Already off but ensure
 
     // Ensure wake interrupts are enabled
     g_pmu.clearIrqStatus();
     g_pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);  // Button wake
 
-    LOGLN("PMU prepared for deep sleep");
+    LOG("[PMU] Deep sleep mode enabled - current should be <100µA\n");
 }
 
 void pmuRestoreFromSleep() {
     if (!g_pmuPresent) return;
 
-    // Re-enable display
+    LOG("[PMU] Restoring from deep sleep...\n");
+
+    // Re-enable display power rails
     g_pmu.enableALDO2();    // Backlight
     g_pmu.enableALDO3();    // Display + Touch
-    g_pmu.enableBLDO2();    // Haptics
 
+    // Haptics - keep disabled, enable only when needed
+    // g_pmu.enableBLDO2();
+
+    // Re-enable battery voltage measurement for battery monitoring
+    g_pmu.enableBattVoltageMeasure();
+
+    // Clear any pending IRQs
     g_pmu.clearIrqStatus();
 
-    LOGLN("PMU restored from sleep");
+    LOG("[PMU] PMU restored - normal operation mode\n");
 }

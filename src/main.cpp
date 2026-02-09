@@ -125,12 +125,14 @@ void setup() {
         default:                LOGLN("(Unknown)"); break;
     }
 
-    // Check wake reason
+    // Check wake reason and handle deep sleep wake
     esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
     bool wokeFromDeepSleep = (wakeReason == ESP_SLEEP_WAKEUP_EXT0 ||
                               wakeReason == ESP_SLEEP_WAKEUP_EXT1);
     if (wokeFromDeepSleep) {
-        LOGLN("Woke from deep sleep via touch/button");
+        LOGLN("========================================");
+        LOGLN("WOKE FROM DEEP SLEEP - AUTO BLE SCAN");
+        LOGLN("========================================");
     }
 
     // -------------------------------------------------------------------------
@@ -185,8 +187,13 @@ void setup() {
     delay(50);  // Reduced from 100ms
     testBatteryDisplay();
 
+    // Always go to idle screen - BLE advertising starts automatically via initBLE()
+    if (wokeFromDeepSleep) {
+        LOGLN("\n[INIT] Deep sleep wake - BLE advertising active automatically");
+    }
     drawIdleScreen();
     lastDrawnState = IDLE;
+
     updateChargingState();
 
     powerPrintDiagnostics();

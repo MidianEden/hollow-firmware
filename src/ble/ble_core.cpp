@@ -200,7 +200,9 @@ class ServerCallbacks : public BLEServerCallbacks {
         otaHandleDisconnected();
 
         powerHandleBLEDisconnect();
-        powerMarkActivity();
+        // POWER: Don't wake device on disconnect - let it stay in current power state
+        // This prevents the watch from turning on when BLE disconnects while sleeping
+        // powerMarkActivity();
 
         // Restart advertising immediately
         BLEDevice::startAdvertising();

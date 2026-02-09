@@ -13,6 +13,9 @@ void initBatterySimulator();
 void updateBatteryPercent();
 void updateChargingState();
 
+// Power management integration
+void batteryResetAfterWake();
+
 // UI
 void drawBatteryOverlay(bool force = false);
 

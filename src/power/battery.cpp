@@ -64,6 +64,10 @@ static bool s_samplesInitialized = false;
 // Track last drawn percentage for smart redraw (used by drawBatteryOverlay)
 static int s_lastDrawnPercent = -1;
 
+// Wake stabilization - prevent voltage jumps after sleep wake
+static bool s_justWokeFromSleep = false;
+static uint32_t s_wakeStabilizeUntilMs = 0;
+
 // =============================================================================
 // Load Compensation
 // =============================================================================
@@ -278,6 +282,13 @@ void initBatterySimulator() {
 void updateBatteryPercent() {
     uint32_t now = millis();
 
+    // POWER FIX: Skip battery updates briefly after wake to allow voltage stabilization
+    // This prevents the "catch up" effect where battery jumps after sleep
+    if (s_justWokeFromSleep && now < s_wakeStabilizeUntilMs) {
+        return;  // Wait for stabilization period
+    }
+    s_justWokeFromSleep = false;
+
     // POWER: Use longer interval when sleeping to reduce ADC wakeups
     uint32_t updateInterval = powerIsLightSleep() ? BATTERY_UPDATE_SLEEP_MS : BATTERY_UPDATE_MS;
     if (now - g_lastBatteryUpdateMs < updateInterval) {
@@ -470,4 +481,30 @@ void testBatteryDisplay() {
 // Get raw voltage for external use
 int getBatteryVoltageMv() {
     return g_batteryVoltageMv;
+}
+
+// =============================================================================
+// Power Management Integration
+// =============================================================================
+
+void batteryResetAfterWake() {
+    // Called when waking from light sleep to prevent voltage jump artifacts
+    // The battery voltage can spike/drop when load changes dramatically
+    // By resetting the samples and waiting, we get a clean reading
+
+    LOG("[BATT] Reset after wake - waiting for voltage stabilization\n");
+
+    // Reset all averaging/smoothing to get fresh readings
+    s_samplesInitialized = false;
+    s_sampleIndex = 0;
+
+    // Don't reset s_smoothedPercent or s_lastReportedPercent - this would cause display jitter
+    // Instead, just wait a bit before next read
+
+    // Flag to skip updates for a short stabilization period (2 seconds)
+    s_justWokeFromSleep = true;
+    s_wakeStabilizeUntilMs = millis() + 2000;
+
+    // Force next update to happen after stabilization period
+    g_lastBatteryUpdateMs = millis() - BATTERY_UPDATE_MS + 2000;
 }

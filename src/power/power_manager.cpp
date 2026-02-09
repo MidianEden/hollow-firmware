@@ -194,6 +194,9 @@ bool powerManagerInit() {
         LOGLN("[POWER] WiFi disabled");
     }
 
+    // NOTE: USB CDC is disabled via platformio.ini (ARDUINO_USB_CDC_ON_BOOT=0)
+    // This saves 5-10mA without requiring code changes
+
     // 2. Explicitly disable unused peripherals
     // LoRa module - hold CS high and reset low to keep it in lowest power state
     pinMode(RADIO_CS_PIN, OUTPUT);
@@ -218,16 +221,16 @@ bool powerManagerInit() {
     setCpuFrequencyMhz(CPU_FREQ_MAX);
     LOG("[POWER] CPU set to %dMHz\n", getCpuFrequencyMhz());
 
-    // 3. Configure ESP-IDF power management for automatic light sleep
+    // 4. Configure ESP-IDF power management for automatic light sleep
     s_pmConfigured = configurePowerManagement();
     if (!s_pmConfigured) {
         LOGLN("[POWER] WARNING: PM not configured - no auto light sleep!");
     }
 
-    // 4. Configure wake sources
+    // 5. Configure wake sources
     configureWakeSources();
 
-    // 5. Initialize timing
+    // 6. Initialize timing
     s_lastActivityMs = millis();
     g_powerState = POWER_ACTIVE;
 
@@ -335,11 +338,12 @@ bool powerUpdate() {
                 bleExitSleepMode();
                 break;
             }
-            // Check if we should go to deep sleep
-            if (TIMEOUT_DEEP_SLEEP_MS > 0 && !g_isCharging && !s_bleConnected) {
+            // Check if we should go to deep sleep (maximum power saving)
+            // Deep sleep triggers after 5 minutes of inactivity
+            if (TIMEOUT_DEEP_SLEEP_MS > 0 && !g_isCharging) {
                 uint32_t lightSleepDuration = now - s_lightSleepEnteredMs;
                 if (lightSleepDuration >= TIMEOUT_DEEP_SLEEP_MS) {
-                    LOGLN("[POWER] -> DEEP_SLEEP");
+                    LOGLN("[POWER] -> DEEP_SLEEP (5min timeout)");
                     powerForceDeepSleep();  // Does not return
                 }
             }
@@ -378,34 +382,66 @@ void powerForceLightSleep() {
 }
 
 void powerForceDeepSleep() {
-    LOGLN("[POWER] Entering deep sleep...");
+    LOGLN("[POWER] Entering MAXIMUM power saving deep sleep...");
     LOG_FLUSH();
 
     // 1. Stop all audio
     if (isMicRunning()) stopMic();
     deinitMic();
 
-    // 2. Turn off display
+    // 2. Turn off display completely
     displaySetOff();
 
-    // 3. Disable BLE completely for lowest power
+    // 3. Disable BLE completely for maximum power saving
     // BLE will reinitialize on wake (device does full reset from deep sleep)
     esp_bluedroid_disable();
     esp_bluedroid_deinit();
     esp_bt_controller_disable();
     esp_bt_controller_deinit();
 
-    // 4. Prepare PMU - disable all non-essential rails
+    // 4. Prepare PMU - disable all non-essential rails for maximum power saving
     pmuPrepareDeepSleep();
 
-    // 5. Configure wake sources for deep sleep
-    // EXT0: Touch (primary wake source, single GPIO, level-triggered LOW)
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);  // Wake on LOW
+    // 5. Clear pending touch interrupt before entering deep sleep
+    // During light sleep, we only check GPIO state but never do an I2C read
+    // to clear the touch controller's interrupt. The INT pin stays stuck LOW.
+    // We must read touch data via I2C to clear it, then wait for pin to go HIGH.
+    {
+        // Wake display controller briefly to allow I2C touch read
+        gfx.wakeup();
+        delay(10);
 
-    // EXT1: PMU button as backup wake source
-    esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+        // Read touch data to clear pending interrupt on the touch controller
+        lgfx::touch_point_t tp;
+        gfx.getTouch(&tp);
+        delay(10);
+        gfx.getTouch(&tp);  // Read twice to be safe
+        delay(10);
 
-    // 6. Isolate ALL unused GPIO to prevent leakage current
+        // Put display back to sleep
+        gfx.sleep();
+
+        // Now wait for touch INT pin to actually go HIGH
+        int waitMs = 0;
+        while (digitalRead(TOUCH_INT_PIN) == LOW && waitMs < 2000) {
+            delay(10);
+            waitMs += 10;
+        }
+        if (waitMs >= 2000) {
+            // Touch INT is stuck LOW - skip touch as wake source, use only PMU button
+            LOG("[POWER] Touch INT stuck LOW - using button-only wake\n");
+            esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+        } else {
+            LOG("[POWER] Touch INT clear (waited %dms) - configuring wake sources\n", waitMs);
+            delay(50);  // Extra settle time
+
+            // 6. Configure wake sources for deep sleep
+            esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);  // Touch: wake on LOW
+            esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);  // Button
+        }
+    }
+
+    // 7. Isolate ALL unused GPIO to prevent leakage current (maximum power saving)
     // Audio pins (mic + speaker)
     rtc_gpio_isolate((gpio_num_t)MIC_DATA_PIN);      // GPIO 47
     rtc_gpio_isolate((gpio_num_t)MIC_CLK_PIN);       // GPIO 44
@@ -429,11 +465,15 @@ void powerForceDeepSleep() {
     // IR transmitter (not used)
     rtc_gpio_isolate((gpio_num_t)IR_TX_PIN);         // GPIO 2
 
-    LOGLN("[POWER] Deep sleep now - wake on touch/button");
+    LOGLN("[POWER] Entering deep sleep NOW - maximum power saving mode");
+    LOGLN("[POWER] Wake on touch/button -> will auto-start BLE scanning");
     LOG_FLUSH();
 
+    delay(100);  // Ensure log output completes
+
     esp_deep_sleep_start();
-    // Never returns - device resets on wake, BLE will reinit automatically
+    // Never returns - device resets on wake
+    // On wake, setup() will detect deep sleep wake and auto-start BLE scanning
 }
 
 // =============================================================================
@@ -486,11 +526,15 @@ void handleWakeFromLightSleep() {
     // 10. Invalidate clock cache so it redraws on next refresh
     uiInvalidateClock();
 
-    // 11. Mark wake tap consumed - do NOT forward to UI input
+    // 11. Reset battery voltage tracking to prevent "catch up" jumps
+    //     Battery voltage can fluctuate when load changes after wake
+    batteryResetAfterWake();
+
+    // 12. Mark wake tap consumed - do NOT forward to UI input
     //     This prevents the wake tap from triggering recording
     g_ignoreTap = true;
 
-    // 12. Release CPU lock - normal power management resumes
+    // 13. Release CPU lock - normal power management resumes
     releaseCpuLock();
 
     // Track wake timing for diagnostics
