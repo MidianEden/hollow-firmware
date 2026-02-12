@@ -44,3 +44,6 @@ bool bleSendNotifyWithRetry(BLECharacteristic* characteristic, const uint8_t* da
 uint32_t bleGetConnectionErrors();
 void bleResetConnectionErrors();
 bool bleIsConnectionHealthy();
+
+// Full BLE shutdown for deep sleep (stops advertising, disconnects, deinits stack)
+void bleFullShutdown();

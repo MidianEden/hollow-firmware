@@ -38,9 +38,10 @@ constexpr int CPU_FREQ_MAX = 160;     // Increased from 80 for faster wake + BLE
 constexpr int CPU_FREQ_MIN = 10;      // Min freq during light sleep idle
 
 // Timeouts (milliseconds) - OPTIMIZED FOR BATTERY LIFE
+// Total time to deep sleep = TIMEOUT_LIGHT_SLEEP_MS + TIMEOUT_DEEP_SLEEP_MS = 300s (5 min)
 constexpr uint32_t TIMEOUT_DIM_MS         = 10000;   // Dim after 10s
 constexpr uint32_t TIMEOUT_LIGHT_SLEEP_MS = 20000;   // Light sleep after 20s
-constexpr uint32_t TIMEOUT_DEEP_SLEEP_MS  = 300000;  // Deep sleep after 5 minutes (saves max power)
+constexpr uint32_t TIMEOUT_DEEP_SLEEP_MS  = 280000;  // 280s in light sleep + 20s = 5 min total idle
 
 // Wake timing targets
 constexpr uint32_t WAKE_TARGET_MS = 50;    // Target wake time in ms
@@ -107,6 +108,10 @@ extern volatile bool g_wokeFromSleep;
 // Called immediately after wake - resets UI to HOME, reinits display
 // Returns only after display is fully on and showing HOME screen
 void handleWakeFromLightSleep();
+
+// Call early in setup() after powerManagerInit() and Serial init.
+// Validates deep sleep wake cause. If spurious, goes back to deep sleep (does NOT return).
+void powerValidateWake();
 
 // -----------------------------------------------------------------------------
 // Diagnostics

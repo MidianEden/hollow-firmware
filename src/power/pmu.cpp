@@ -186,9 +186,13 @@ void pmuPrepareDeepSleep() {
     g_pmu.disableVbusVoltageMeasure();    // POWER: Already off but ensure
     g_pmu.disableSystemVoltageMeasure();  // POWER: Already off but ensure
 
-    // Ensure wake interrupts are enabled
+    // Disable all PMU interrupts, then enable only button wake
+    // Without disableIRQ first, VBUS_INSERT/REMOVE from initPMU remain active
+    // and could spuriously pull PMU_INT LOW (waking the ESP32)
+    g_pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
     g_pmu.clearIrqStatus();
-    g_pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);  // Button wake
+    g_pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ |
+                    XPOWERS_AXP2101_PKEY_LONG_IRQ);   // Button wake (short + long press)
 
     LOG("[PMU] Deep sleep mode enabled - current should be <100µA\n");
 }

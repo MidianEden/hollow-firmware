@@ -488,3 +488,31 @@ bool bleIsConnectionHealthy() {
     // Connection unhealthy if no successful notify in threshold time
     return timeSinceSuccess < CONNECTION_UNHEALTHY_THRESHOLD_MS;
 }
+
+// =============================================================================
+// Full BLE shutdown for deep sleep
+// =============================================================================
+void bleFullShutdown() {
+    LOGLN("[BLE] Full shutdown for deep sleep...");
+
+    // 1. Stop advertising
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    if (adv) {
+        adv->stop();
+    }
+
+    // 2. Disconnect any active connection
+    if (g_bleConnected && g_server) {
+        g_server->disconnect(g_connId);
+        g_bleConnected = false;
+        g_connId = 0xFFFF;
+    }
+
+    // 3. Wait for BLE stack to process pending operations
+    delay(150);
+
+    // 4. Deinit entire BLE stack (bluedroid + controller + memory release)
+    BLEDevice::deinit(true);
+
+    LOGLN("[BLE] Shutdown complete - stack fully deinitialized");
+}

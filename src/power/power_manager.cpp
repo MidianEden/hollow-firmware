@@ -27,6 +27,7 @@
 #include <driver/gpio.h>
 #include <esp_system.h>
 #include <soc/rtc.h>
+#include <Wire.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -40,11 +41,6 @@ static uint32_t s_lastActivityMs = 0;
 static uint32_t s_lightSleepEnteredMs = 0;
 static bool s_pmConfigured = false;
 static bool s_bleConnected = false;
-
-// Wake timing metrics (for diagnostics)
-static uint32_t s_lastWakeTimeUs = 0;
-static uint32_t s_wakeCount = 0;
-static uint32_t s_maxWakeTimeUs = 0;
 
 // Light sleep lock - prevent sleep during critical operations
 static esp_pm_lock_handle_t s_cpuLock = nullptr;
@@ -104,30 +100,17 @@ static void displaySetOff() {
 // =============================================================================
 
 static bool configurePowerManagement() {
-    // ESP32-S3 power management configuration
-    // This enables automatic light sleep when all tasks are idle
-
     esp_pm_config_esp32s3_t pm_config = {};
     pm_config.max_freq_mhz = CPU_FREQ_MAX;
     pm_config.min_freq_mhz = CPU_FREQ_MIN;
     pm_config.light_sleep_enable = true;
 
     esp_err_t err = esp_pm_configure(&pm_config);
-    if (err != ESP_OK) {
-        LOG("[POWER] PM configure failed: %s\n", esp_err_to_name(err));
-        return false;
-    }
+    if (err != ESP_OK) return false;
 
-    // Create a CPU frequency lock for when we need guaranteed performance
-    // (e.g., during audio recording or BLE transfers)
     err = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "cpu_work", &s_cpuLock);
-    if (err != ESP_OK) {
-        LOG("[POWER] Lock create failed: %s\n", esp_err_to_name(err));
-        return false;
-    }
+    if (err != ESP_OK) return false;
 
-    LOG("[POWER] PM configured: %d-%dMHz, light_sleep=ON\n",
-                  CPU_FREQ_MIN, CPU_FREQ_MAX);
     return true;
 }
 
@@ -136,15 +119,9 @@ static bool configurePowerManagement() {
 // =============================================================================
 
 static void configureWakeSources() {
-    // Touch interrupt - GPIO 16, active LOW
-    // Level-triggered wake for light sleep - fires when touch INT goes low
     gpio_wakeup_enable((gpio_num_t)TOUCH_INT_PIN, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
-
-    // PMU interrupt - GPIO 21, active LOW (power button, charger events)
     gpio_wakeup_enable((gpio_num_t)PMU_INT_PIN, GPIO_INTR_LOW_LEVEL);
-
-    LOGLN("[POWER] Wake sources: GPIO16(touch), GPIO21(PMU)");
 }
 
 // =============================================================================
@@ -170,14 +147,6 @@ static void checkBatteryHealth() {
         // Shutdown via PMU (cleaner than brownout reset)
         g_pmu.shutdown();
     }
-    else if (voltage < BROWNOUT_THRESHOLD_MV && !g_isCharging) {
-        // Log warning but don't shutdown yet
-        static uint32_t lastWarnMs = 0;
-        if (millis() - lastWarnMs > 30000) {
-            LOG("[POWER] WARNING: Battery low %dmV\n", voltage);
-            lastWarnMs = millis();
-        }
-    }
 }
 
 // =============================================================================
@@ -185,56 +154,30 @@ static void checkBatteryHealth() {
 // =============================================================================
 
 bool powerManagerInit() {
-    LOGLN("\n[POWER] Initializing power manager...");
-
-    // 1. Ensure WiFi is completely disabled
+    // Ensure WiFi is completely disabled
     esp_err_t err = esp_wifi_stop();
-    if (err == ESP_OK) {
-        esp_wifi_deinit();
-        LOGLN("[POWER] WiFi disabled");
-    }
+    if (err == ESP_OK) esp_wifi_deinit();
 
-    // NOTE: USB CDC is disabled via platformio.ini (ARDUINO_USB_CDC_ON_BOOT=0)
-    // This saves 5-10mA without requiring code changes
-
-    // 2. Explicitly disable unused peripherals
-    // LoRa module - hold CS high and reset low to keep it in lowest power state
+    // Disable unused peripherals
     pinMode(RADIO_CS_PIN, OUTPUT);
-    digitalWrite(RADIO_CS_PIN, HIGH);      // Deselect SPI
+    digitalWrite(RADIO_CS_PIN, HIGH);
     pinMode(RADIO_RST_PIN, OUTPUT);
-    digitalWrite(RADIO_RST_PIN, LOW);      // Hold in reset
-    // Other LoRa pins as inputs with no pull (saves power)
+    digitalWrite(RADIO_RST_PIN, LOW);
     pinMode(RADIO_MOSI_PIN, INPUT);
     pinMode(RADIO_MISO_PIN, INPUT);
     pinMode(RADIO_SCLK_PIN, INPUT);
     pinMode(RADIO_DIO1_PIN, INPUT);
     pinMode(RADIO_BUSY_PIN, INPUT);
-    LOGLN("[POWER] LoRa module disabled (held in reset)");
-
-    // Accelerometer - not used, set interrupt pin as input
     pinMode(ACCEL_INT_PIN, INPUT);
-
-    // IR transmitter - not used
     pinMode(IR_TX_PIN, INPUT);
 
-    // 3. Set initial CPU frequency
     setCpuFrequencyMhz(CPU_FREQ_MAX);
-    LOG("[POWER] CPU set to %dMHz\n", getCpuFrequencyMhz());
-
-    // 4. Configure ESP-IDF power management for automatic light sleep
     s_pmConfigured = configurePowerManagement();
-    if (!s_pmConfigured) {
-        LOGLN("[POWER] WARNING: PM not configured - no auto light sleep!");
-    }
-
-    // 5. Configure wake sources
     configureWakeSources();
 
-    // 6. Initialize timing
     s_lastActivityMs = millis();
     g_powerState = POWER_ACTIVE;
 
-    LOGLN("[POWER] Power manager initialized\n");
     return s_pmConfigured;
 }
 
@@ -252,27 +195,23 @@ void powerMarkActivity() {
         return;
     }
 
-    // From dimmed, just transition to active (no special handling needed)
+    // From dimmed, just transition to active
     if (g_powerState == POWER_DIMMED) {
         g_powerState = POWER_ACTIVE;
         g_sleeping = false;
         g_dimmed = false;
         displaySetActive();
         s_lightSleepEnteredMs = 0;
-        LOGLN("[POWER] -> ACTIVE (user activity)");
     }
 }
 
 void powerHandleBLEConnect() {
     s_bleConnected = true;
     powerMarkActivity();
-    LOGLN("[POWER] BLE connected");
 }
 
 void powerHandleBLEDisconnect() {
     s_bleConnected = false;
-    // Don't change power state - let normal timeout handle it
-    LOGLN("[POWER] BLE disconnected");
 }
 
 // =============================================================================
@@ -309,46 +248,30 @@ bool powerUpdate() {
         case POWER_ACTIVE:
             if (idleMs >= TIMEOUT_DIM_MS) {
                 g_powerState = POWER_DIMMED;
-                g_dimmed = true;  // Sync legacy global
+                g_dimmed = true;
                 g_sleeping = false;
                 displaySetDimmed();
-                LOGLN("[POWER] -> DIMMED");
             }
             break;
 
         case POWER_DIMMED:
-            if (idleMs >= TIMEOUT_LIGHT_SLEEP_MS && !g_isCharging) {
+            if (idleMs >= TIMEOUT_LIGHT_SLEEP_MS) {
                 g_powerState = POWER_LIGHT_SLEEP;
-                g_sleeping = true;  // Sync legacy global
+                g_sleeping = true;
                 g_dimmed = false;
                 displaySetOff();
                 s_lightSleepEnteredMs = now;
-                // POWER: Enter BLE sleep mode (slower polling, not disabled)
                 bleEnterSleepMode();
-                LOGLN("[POWER] -> LIGHT_SLEEP");
             }
             break;
 
         case POWER_LIGHT_SLEEP:
-            if (g_isCharging) {
-                g_powerState = POWER_DIMMED;
-                g_dimmed = true;
-                g_sleeping = false;
-                displaySetDimmed();
-                bleExitSleepMode();
-                break;
-            }
-            // Check if we should go to deep sleep (maximum power saving)
-            // Deep sleep triggers after 5 minutes of inactivity
-            if (TIMEOUT_DEEP_SLEEP_MS > 0 && !g_isCharging) {
+            if (TIMEOUT_DEEP_SLEEP_MS > 0) {
                 uint32_t lightSleepDuration = now - s_lightSleepEnteredMs;
                 if (lightSleepDuration >= TIMEOUT_DEEP_SLEEP_MS) {
-                    LOGLN("[POWER] -> DEEP_SLEEP (5min timeout)");
                     powerForceDeepSleep();  // Does not return
                 }
             }
-            // In light sleep, ESP-IDF handles actual sleep automatically
-            // We just need short delays in main loop
             break;
 
         case POWER_DEEP_SLEEP:
@@ -381,99 +304,114 @@ void powerForceLightSleep() {
     s_lightSleepEnteredMs = millis();
 }
 
-void powerForceDeepSleep() {
-    LOGLN("[POWER] Entering MAXIMUM power saving deep sleep...");
-    LOG_FLUSH();
+// =============================================================================
+// Internal: Clear FT6336 touch controller interrupt via I2C
+// =============================================================================
+// The FT6336 keeps INT (GPIO 16) asserted LOW until the host reads touch data.
+// If not cleared before deep sleep, EXT0 wakeup triggers immediately.
+// Returns true if INT was successfully cleared (HIGH), false if still stuck LOW.
+// =============================================================================
+static bool clearTouchInterrupt() {
+    Wire1.begin(TOUCH_SDA_PIN, TOUCH_SCL_PIN, 100000);
 
-    // 1. Stop all audio
-    if (isMicRunning()) stopMic();
-    deinitMic();
+    // Set FT6336 to interrupt trigger mode (INT stays LOW until data read)
+    Wire1.beginTransmission(TOUCH_I2C_ADDR);
+    Wire1.write(0xA4);  // G_MODE register
+    Wire1.write(0x00);  // 0x00 = Interrupt Trigger mode
+    Wire1.endTransmission();
 
-    // 2. Turn off display completely
-    displaySetOff();
+    bool cleared = false;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        // Read touch data registers (0x00-0x06) to deassert INT
+        Wire1.beginTransmission(TOUCH_I2C_ADDR);
+        Wire1.write(0x00);
+        Wire1.endTransmission(false);
 
-    // 3. Disable BLE completely for maximum power saving
-    // BLE will reinitialize on wake (device does full reset from deep sleep)
-    esp_bluedroid_disable();
-    esp_bluedroid_deinit();
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
+        Wire1.requestFrom(TOUCH_I2C_ADDR, 7);
+        while (Wire1.available()) Wire1.read();
 
-    // 4. Prepare PMU - disable all non-essential rails for maximum power saving
-    pmuPrepareDeepSleep();
+        delay(15);  // Allow INT line to settle
 
-    // 5. Clear pending touch interrupt before entering deep sleep
-    // During light sleep, we only check GPIO state but never do an I2C read
-    // to clear the touch controller's interrupt. The INT pin stays stuck LOW.
-    // We must read touch data via I2C to clear it, then wait for pin to go HIGH.
-    {
-        // Wake display controller briefly to allow I2C touch read
-        gfx.wakeup();
-        delay(10);
-
-        // Read touch data to clear pending interrupt on the touch controller
-        lgfx::touch_point_t tp;
-        gfx.getTouch(&tp);
-        delay(10);
-        gfx.getTouch(&tp);  // Read twice to be safe
-        delay(10);
-
-        // Put display back to sleep
-        gfx.sleep();
-
-        // Now wait for touch INT pin to actually go HIGH
-        int waitMs = 0;
-        while (digitalRead(TOUCH_INT_PIN) == LOW && waitMs < 2000) {
-            delay(10);
-            waitMs += 10;
+        if (digitalRead(TOUCH_INT_PIN) == HIGH) {
+            cleared = true;
+            break;
         }
-        if (waitMs >= 2000) {
-            // Touch INT is stuck LOW - skip touch as wake source, use only PMU button
-            LOG("[POWER] Touch INT stuck LOW - using button-only wake\n");
-            esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
-        } else {
-            LOG("[POWER] Touch INT clear (waited %dms) - configuring wake sources\n", waitMs);
-            delay(50);  // Extra settle time
-
-            // 6. Configure wake sources for deep sleep
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);  // Touch: wake on LOW
-            esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);  // Button
-        }
+        LOG("[TOUCH-DBG] INT still LOW (clear attempt %d/5)\n", attempt + 1);
     }
 
-    // 7. Isolate ALL unused GPIO to prevent leakage current (maximum power saving)
-    // Audio pins (mic + speaker)
-    rtc_gpio_isolate((gpio_num_t)MIC_DATA_PIN);      // GPIO 47
-    rtc_gpio_isolate((gpio_num_t)MIC_CLK_PIN);       // GPIO 44
-    rtc_gpio_isolate((gpio_num_t)I2S_BCK_PIN);       // GPIO 48
-    rtc_gpio_isolate((gpio_num_t)I2S_WS_PIN);        // GPIO 15
-    rtc_gpio_isolate((gpio_num_t)I2S_DOUT_PIN);      // GPIO 46
+    Wire1.end();
+    return cleared;
+}
 
-    // LoRa SPI pins (module is powered off but pins can leak)
-    rtc_gpio_isolate((gpio_num_t)RADIO_MOSI_PIN);    // GPIO 1
-    rtc_gpio_isolate((gpio_num_t)RADIO_SCLK_PIN);    // GPIO 3
-    rtc_gpio_isolate((gpio_num_t)RADIO_MISO_PIN);    // GPIO 4
-    rtc_gpio_isolate((gpio_num_t)RADIO_CS_PIN);      // GPIO 5
-    rtc_gpio_isolate((gpio_num_t)RADIO_DIO3_PIN);    // GPIO 6
-    rtc_gpio_isolate((gpio_num_t)RADIO_BUSY_PIN);    // GPIO 7
-    rtc_gpio_isolate((gpio_num_t)RADIO_RST_PIN);     // GPIO 8
-    rtc_gpio_isolate((gpio_num_t)RADIO_DIO1_PIN);    // GPIO 9
+// =============================================================================
+// Internal: Put FT6336 into Monitor mode for deep sleep
+// =============================================================================
+// Monitor mode (0xA5=0x01) periodically scans for touches at a low rate.
+// When a touch is detected, INT is asserted LOW — perfect for EXT0 wake.
+// Hibernate mode (0x03) does NOT scan and requires a hardware reset to exit,
+// so it cannot be used for touch wake.
+// =============================================================================
+static void touchEnterMonitor() {
+    Wire1.begin(TOUCH_SDA_PIN, TOUCH_SCL_PIN, 100000);
 
-    // Accelerometer interrupt (not used)
-    rtc_gpio_isolate((gpio_num_t)ACCEL_INT_PIN);     // GPIO 14
+    // First: clear any pending interrupt by reading touch data
+    Wire1.beginTransmission(TOUCH_I2C_ADDR);
+    Wire1.write(0x00);
+    Wire1.endTransmission(false);
+    Wire1.requestFrom(TOUCH_I2C_ADDR, 7);
+    while (Wire1.available()) Wire1.read();
+    delay(10);
 
-    // IR transmitter (not used)
-    rtc_gpio_isolate((gpio_num_t)IR_TX_PIN);         // GPIO 2
+    // Set interrupt trigger mode: INT stays LOW until touch data is read
+    Wire1.beginTransmission(TOUCH_I2C_ADDR);
+    Wire1.write(0xA4);  // G_MODE register
+    Wire1.write(0x00);  // 0x00 = Interrupt Trigger mode
+    Wire1.endTransmission();
 
-    LOGLN("[POWER] Entering deep sleep NOW - maximum power saving mode");
-    LOGLN("[POWER] Wake on touch/button -> will auto-start BLE scanning");
+    // Set monitor scan period to maximum (~2.5s between scans) to save power
+    Wire1.beginTransmission(TOUCH_I2C_ADDR);
+    Wire1.write(0x87);  // PERIOD_MONITOR register
+    Wire1.write(0xFF);  // 255 * ~10ms = ~2.5s between scans
+    Wire1.endTransmission();
+
+    // Enter Monitor mode (periodic low-power scanning)
+    Wire1.beginTransmission(TOUCH_I2C_ADDR);
+    Wire1.write(0xA5);  // Power mode register
+    Wire1.write(0x01);  // 0x01 = Monitor mode
+    Wire1.endTransmission();
+
+    Wire1.end();
+
+    // Wait for FT6336 to enter Monitor mode
+    delay(50);
+
+    LOG("[TOUCH-DBG] FT6336 -> Monitor (INT=%s)\n",
+        digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
+}
+
+void powerForceDeepSleep() {
+    LOG("[DEEP] === MINIMAL DEEP SLEEP TEST ===\n");
     LOG_FLUSH();
 
-    delay(100);  // Ensure log output completes
+    // Shutdown peripherals
+    if (isMicRunning()) stopMic();
+    deinitMic();
+    gfx.setBrightness(0);
+    pmuDisableDisplay();
+    bleFullShutdown();
+    pmuPrepareDeepSleep();
+    touchEnterMonitor();
+
+    // MINIMAL wake config: timer only, no EXT, no isolate
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL);  // 10 seconds
+
+    LOG("[DEEP] Timer 10s configured, sleeping NOW\n");
+    LOG_FLUSH();
+    Serial.end();     // Release USB CDC before deep sleep
+    delay(100);
 
     esp_deep_sleep_start();
-    // Never returns - device resets on wake
-    // On wake, setup() will detect deep sleep wake and auto-start BLE scanning
 }
 
 // =============================================================================
@@ -484,70 +422,27 @@ void powerForceDeepSleep() {
 // =============================================================================
 
 void handleWakeFromLightSleep() {
-    uint32_t wakeStartUs = micros();
-
-    // 1. Update power state FIRST (before any hardware access)
-    //    This ensures other code sees the correct state immediately
     g_powerState = POWER_ACTIVE;
     g_sleeping = false;
     g_dimmed = false;
     s_lastActivityMs = millis();
     s_lightSleepEnteredMs = 0;
-
-    // 2. Clear wake flag EARLY to prevent re-entry race conditions
     g_wokeFromSleep = false;
 
-    // 3. POWER: Exit BLE sleep mode (restore faster polling)
     bleExitSleepMode();
-
-    // 4. Acquire CPU lock to prevent auto-sleep during wake sequence
     acquireCpuLock();
-
-    // 5. Enable display power rail FIRST (PMU is fast, ~1ms)
     pmuEnableDisplay();
-
-    // 6. Wake display controller - CRITICAL PATH
-    //    wakeup() exits sleep mode, much faster than full init()
-    //    Typical: ~5-10ms vs 50-100ms for init()
     gfx.wakeup();
-
-    // 7. Set brightness BEFORE drawing to avoid flash
     gfx.setBrightness(g_isCharging ? BRIGHTNESS_CHARGING : BRIGHTNESS_ACTIVE);
 
-    // 8. FORCE UI STATE TO HOME - Always return to home on wake
-    //    This is what users expect - instant, predictable behavior
     currentState = IDLE;
     lastDrawnState = IDLE;
-
-    // 9. Draw HOME screen - Use optimized drawing path
-    //    drawIdleScreen() clears screen and draws logo + battery
     drawIdleScreen();
-
-    // 10. Invalidate clock cache so it redraws on next refresh
     uiInvalidateClock();
-
-    // 11. Reset battery voltage tracking to prevent "catch up" jumps
-    //     Battery voltage can fluctuate when load changes after wake
     batteryResetAfterWake();
-
-    // 12. Mark wake tap consumed - do NOT forward to UI input
-    //     This prevents the wake tap from triggering recording
     g_ignoreTap = true;
 
-    // 13. Release CPU lock - normal power management resumes
     releaseCpuLock();
-
-    // Track wake timing for diagnostics
-    uint32_t wakeTimeUs = micros() - wakeStartUs;
-    s_lastWakeTimeUs = wakeTimeUs;
-    s_wakeCount++;
-    if (wakeTimeUs > s_maxWakeTimeUs) {
-        s_maxWakeTimeUs = wakeTimeUs;
-    }
-
-    LOG("[POWER] WAKE #%lu: %lu us (%.1f ms) -> HOME%s\n",
-                  s_wakeCount, wakeTimeUs, wakeTimeUs / 1000.0f,
-                  (wakeTimeUs > WAKE_MAX_MS * 1000) ? " [SLOW!]" : "");
 }
 
 // =============================================================================
@@ -599,13 +494,6 @@ void powerPrintDiagnostics() {
     LOG("PM Configured: %s\n", s_pmConfigured ? "YES" : "NO");
     LOG("CPU Lock Held: %s\n", s_cpuLockHeld ? "YES" : "NO");
 
-    // Wake timing stats
-    LOGLN("\nWake Performance:");
-    LOG("  Wake Count: %lu\n", s_wakeCount);
-    LOG("  Last Wake: %.1f ms\n", s_lastWakeTimeUs / 1000.0f);
-    LOG("  Max Wake: %.1f ms\n", s_maxWakeTimeUs / 1000.0f);
-    LOG("  Target: <%lu ms\n", WAKE_TARGET_MS);
-
     // PMU rails
     if (g_pmuPresent) {
         LOGLN("\nPMU Power Rails:");
@@ -653,4 +541,79 @@ float powerEstimateCurrentMa() {
     if (g_recordingInProgress) current += 10.0f;
 
     return current;
+}
+
+// =============================================================================
+// Public: Wake Validation - call early in setup()
+// =============================================================================
+// After deep sleep wake, validates the wake source to prevent spurious wake loops.
+// If the wake was spurious (e.g., uncleared touch INT), goes back to deep sleep
+// immediately WITHOUT returning - avoids a full init cycle that wastes ~315 seconds.
+// =============================================================================
+
+void powerValidateWake() {
+    esp_reset_reason_t resetReason = esp_reset_reason();
+    if (resetReason != ESP_RST_DEEPSLEEP) return;
+
+    esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
+
+    LOG("[TOUCH-DBG] === WAKE FROM DEEP SLEEP ===\n");
+    LOG("[TOUCH-DBG] Wake cause: %d (%s)\n", (int)wakeReason,
+        wakeReason == ESP_SLEEP_WAKEUP_EXT0 ? "TOUCH/EXT0" :
+        wakeReason == ESP_SLEEP_WAKEUP_EXT1 ? "BUTTON/EXT1" : "OTHER");
+    LOG("[TOUCH-DBG] GPIO16 at boot: %s\n",
+        digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
+    LOG_FLUSH();
+
+    // Unexpected wake sources - go back to sleep
+    if (wakeReason != ESP_SLEEP_WAKEUP_EXT0 &&
+        wakeReason != ESP_SLEEP_WAKEUP_EXT1 &&
+        wakeReason != ESP_SLEEP_WAKEUP_TIMER) {
+        LOG("[TOUCH-DBG] Unexpected wake - returning to deep sleep\n");
+        LOG_FLUSH();
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        rtc_gpio_pullup_en((gpio_num_t)TOUCH_INT_PIN);
+        rtc_gpio_pulldown_dis((gpio_num_t)TOUCH_INT_PIN);
+        rtc_gpio_pullup_en((gpio_num_t)PMU_INT_PIN);
+        rtc_gpio_pulldown_dis((gpio_num_t)PMU_INT_PIN);
+        esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);
+        esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+        esp_deep_sleep_start();
+    }
+
+    // Touch wake - validate finger is actually present
+    if (wakeReason == ESP_SLEEP_WAKEUP_EXT0) {
+        // Step 1: Clear pending INT via I2C
+        bool cleared = clearTouchInterrupt();
+        LOG("[TOUCH-DBG] After I2C clear: cleared=%s, GPIO16=%s\n",
+            cleared ? "yes" : "no",
+            digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
+        LOG_FLUSH();
+
+        // Step 2: Wait for FT6336 scan cycle (~250ms in Monitor mode)
+        delay(300);
+
+        // Step 3: Check if finger is still there
+        pinMode(TOUCH_INT_PIN, INPUT_PULLUP);
+        int pinState = digitalRead(TOUCH_INT_PIN);
+        LOG("[TOUCH-DBG] After 300ms wait: GPIO16=%s\n",
+            pinState == HIGH ? "HIGH (no finger)" : "LOW (finger present)");
+        LOG_FLUSH();
+
+        if (pinState == HIGH) {
+            LOG("[TOUCH-DBG] SPURIOUS - returning to deep sleep\n");
+            LOG_FLUSH();
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+            rtc_gpio_pullup_en((gpio_num_t)TOUCH_INT_PIN);
+            rtc_gpio_pulldown_dis((gpio_num_t)TOUCH_INT_PIN);
+            rtc_gpio_pullup_en((gpio_num_t)PMU_INT_PIN);
+            rtc_gpio_pulldown_dis((gpio_num_t)PMU_INT_PIN);
+            esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);
+            esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+            esp_deep_sleep_start();
+        }
+
+        LOG("[TOUCH-DBG] VALID touch wake - proceeding with boot\n");
+        LOG_FLUSH();
+    }
 }

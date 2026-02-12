@@ -110,6 +110,13 @@ void setup() {
     LOGLN("========================================\n");
 #endif
 
+    // -------------------------------------------------------------------------
+    // 2.5. VALIDATE DEEP SLEEP WAKE - may not return if spurious
+    // -------------------------------------------------------------------------
+    // If woken from deep sleep by an uncleared touch INT (no real finger),
+    // this goes back to deep sleep immediately without full init.
+    powerValidateWake();
+
     // Log reset reason
     esp_reset_reason_t resetReason = esp_reset_reason();
     LOG("Reset reason: %d ", resetReason);
@@ -127,8 +134,33 @@ void setup() {
 
     // Check wake reason and handle deep sleep wake
     esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
-    bool wokeFromDeepSleep = (wakeReason == ESP_SLEEP_WAKEUP_EXT0 ||
-                              wakeReason == ESP_SLEEP_WAKEUP_EXT1);
+    bool wokeFromDeepSleep = (resetReason == ESP_RST_DEEPSLEEP) ||
+                              (wakeReason == ESP_SLEEP_WAKEUP_EXT0 ||
+                               wakeReason == ESP_SLEEP_WAKEUP_EXT1);
+
+    // Show wake/reset reason on screen briefly for diagnostics
+    // This helps identify spurious wakes without needing serial
+    if (resetReason == ESP_RST_DEEPSLEEP || resetReason == ESP_RST_PANIC ||
+        resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_INT_WDT ||
+        resetReason == ESP_RST_BROWNOUT) {
+        const char *reason = "???";
+        switch (wakeReason) {
+            case ESP_SLEEP_WAKEUP_EXT0:      reason = "TOUCH (EXT0)"; break;
+            case ESP_SLEEP_WAKEUP_EXT1:      reason = "BUTTON (EXT1)"; break;
+            case ESP_SLEEP_WAKEUP_TIMER:     reason = "TIMER"; break;
+            case ESP_SLEEP_WAKEUP_GPIO:      reason = "GPIO"; break;
+            case ESP_SLEEP_WAKEUP_UNDEFINED: reason = "UNDEFINED"; break;
+            default:                         reason = "OTHER"; break;
+        }
+        const char *rst = "DEEPSLEEP";
+        if (resetReason == ESP_RST_PANIC)    rst = "PANIC!";
+        if (resetReason == ESP_RST_TASK_WDT) rst = "WDT!";
+        if (resetReason == ESP_RST_INT_WDT)  rst = "INT_WDT!";
+        if (resetReason == ESP_RST_BROWNOUT) rst = "BROWNOUT!";
+
+        LOG("Wake diagnostic: rst=%s wake=%s\n", rst, reason);
+    }
+
     if (wokeFromDeepSleep) {
         LOGLN("========================================");
         LOGLN("WOKE FROM DEEP SLEEP - AUTO BLE SCAN");
