@@ -119,9 +119,13 @@ static bool configurePowerManagement() {
 // =============================================================================
 
 static void configureWakeSources() {
+    // Light sleep wake via GPIO (digital domain). Keep both lines pulled high.
+    pinMode(TOUCH_INT_PIN, INPUT_PULLUP);
+    pinMode(PMU_INT_PIN, INPUT_PULLUP);
+
     gpio_wakeup_enable((gpio_num_t)TOUCH_INT_PIN, GPIO_INTR_LOW_LEVEL);
-    esp_sleep_enable_gpio_wakeup();
     gpio_wakeup_enable((gpio_num_t)PMU_INT_PIN, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
 }
 
 // =============================================================================
@@ -389,8 +393,41 @@ static void touchEnterMonitor() {
         digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
 }
 
+static void configureRtcWakeInput(gpio_num_t pin) {
+    rtc_gpio_init(pin);
+    rtc_gpio_set_direction(pin, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_en(pin);
+    rtc_gpio_pulldown_dis(pin);
+}
+
+static bool configureDeepSleepWakeSources() {
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+    // EXT0 needs RTC IO and RTC_PERIPH power domain alive.
+    configureRtcWakeInput((gpio_num_t)TOUCH_INT_PIN);
+    configureRtcWakeInput((gpio_num_t)PMU_INT_PIN);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
+
+    esp_err_t err = esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);
+    if (err != ESP_OK) {
+        LOG("[DEEP] ext0 wake config failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+
+    // Keep PMU interrupt/button wake as a secondary wake source.
+    err = esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+    if (err != ESP_OK) {
+        LOG("[DEEP] ext1 wake config failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+
+    return true;
+}
+
 void powerForceDeepSleep() {
-    LOG("[DEEP] === MINIMAL DEEP SLEEP TEST ===\n");
+    LOG("[DEEP] Entering deep sleep (touch/button wake, no timer)...\n");
     LOG_FLUSH();
 
     // Shutdown peripherals
@@ -402,13 +439,17 @@ void powerForceDeepSleep() {
     pmuPrepareDeepSleep();
     touchEnterMonitor();
 
-    // MINIMAL wake config: timer only, no EXT, no isolate
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL);  // 10 seconds
+    if (!configureDeepSleepWakeSources()) {
+        LOG("[DEEP] Wake source setup failed - restarting to recover\n");
+        LOG_FLUSH();
+        delay(100);
+        ESP.restart();
+    }
 
-    LOG("[DEEP] Timer 10s configured, sleeping NOW\n");
+    LOG("[DEEP] Wake sources set: EXT0=touch(INT low), EXT1=PMU_INT low\n");
+    LOG("[DEEP] Sleeping now...\n");
     LOG_FLUSH();
-    Serial.end();     // Release USB CDC before deep sleep
+    Serial.end();  // Release USB CDC before deep sleep
     delay(100);
 
     esp_deep_sleep_start();
@@ -557,6 +598,12 @@ void powerValidateWake() {
 
     esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
 
+    // Wake pins become RTC IOs in deep sleep; restore to digital GPIO for runtime.
+    rtc_gpio_deinit((gpio_num_t)TOUCH_INT_PIN);
+    rtc_gpio_deinit((gpio_num_t)PMU_INT_PIN);
+    pinMode(TOUCH_INT_PIN, INPUT_PULLUP);
+    pinMode(PMU_INT_PIN, INPUT_PULLUP);
+
     LOG("[TOUCH-DBG] === WAKE FROM DEEP SLEEP ===\n");
     LOG("[TOUCH-DBG] Wake cause: %d (%s)\n", (int)wakeReason,
         wakeReason == ESP_SLEEP_WAKEUP_EXT0 ? "TOUCH/EXT0" :
@@ -567,17 +614,10 @@ void powerValidateWake() {
 
     // Unexpected wake sources - go back to sleep
     if (wakeReason != ESP_SLEEP_WAKEUP_EXT0 &&
-        wakeReason != ESP_SLEEP_WAKEUP_EXT1 &&
-        wakeReason != ESP_SLEEP_WAKEUP_TIMER) {
+        wakeReason != ESP_SLEEP_WAKEUP_EXT1) {
         LOG("[TOUCH-DBG] Unexpected wake - returning to deep sleep\n");
         LOG_FLUSH();
-        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-        rtc_gpio_pullup_en((gpio_num_t)TOUCH_INT_PIN);
-        rtc_gpio_pulldown_dis((gpio_num_t)TOUCH_INT_PIN);
-        rtc_gpio_pullup_en((gpio_num_t)PMU_INT_PIN);
-        rtc_gpio_pulldown_dis((gpio_num_t)PMU_INT_PIN);
-        esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);
-        esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+        if (!configureDeepSleepWakeSources()) return;
         esp_deep_sleep_start();
     }
 
@@ -603,13 +643,7 @@ void powerValidateWake() {
         if (pinState == HIGH) {
             LOG("[TOUCH-DBG] SPURIOUS - returning to deep sleep\n");
             LOG_FLUSH();
-            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-            rtc_gpio_pullup_en((gpio_num_t)TOUCH_INT_PIN);
-            rtc_gpio_pulldown_dis((gpio_num_t)TOUCH_INT_PIN);
-            rtc_gpio_pullup_en((gpio_num_t)PMU_INT_PIN);
-            rtc_gpio_pulldown_dis((gpio_num_t)PMU_INT_PIN);
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);
-            esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
+            if (!configureDeepSleepWakeSources()) return;
             esp_deep_sleep_start();
         }
 
