@@ -138,9 +138,6 @@ static void checkBatteryHealth() {
     int voltage = g_pmu.getBattVoltage();
 
     if (voltage < SHUTDOWN_THRESHOLD_MV && !g_isCharging) {
-        LOG("[POWER] CRITICAL: Battery %dmV - forcing shutdown!\n", voltage);
-        LOG_FLUSH();
-
         // Give user visual feedback if possible
         gfx.fillScreen(TFT_RED);
         gfx.setTextColor(TFT_WHITE);
@@ -340,7 +337,6 @@ static bool clearTouchInterrupt() {
             cleared = true;
             break;
         }
-        LOG("[TOUCH-DBG] INT still LOW (clear attempt %d/5)\n", attempt + 1);
     }
 
     Wire1.end();
@@ -389,8 +385,6 @@ static void touchEnterMonitor() {
     // Wait for FT6336 to enter Monitor mode
     delay(50);
 
-    LOG("[TOUCH-DBG] FT6336 -> Monitor (INT=%s)\n",
-        digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
 }
 
 static void configureRtcWakeInput(gpio_num_t pin) {
@@ -412,14 +406,12 @@ static bool configureDeepSleepWakeSources() {
 
     esp_err_t err = esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_INT_PIN, 0);
     if (err != ESP_OK) {
-        LOG("[DEEP] ext0 wake config failed: %s\n", esp_err_to_name(err));
         return false;
     }
 
     // Keep PMU interrupt/button wake as a secondary wake source.
     err = esp_sleep_enable_ext1_wakeup((1ULL << PMU_INT_PIN), ESP_EXT1_WAKEUP_ALL_LOW);
     if (err != ESP_OK) {
-        LOG("[DEEP] ext1 wake config failed: %s\n", esp_err_to_name(err));
         return false;
     }
 
@@ -427,8 +419,8 @@ static bool configureDeepSleepWakeSources() {
 }
 
 void powerForceDeepSleep() {
-    LOG("[DEEP] Entering deep sleep (touch/button wake, no timer)...\n");
-    LOG_FLUSH();
+    Serial.println("[PWR] entering deep sleep");
+    Serial.flush();
 
     // Shutdown peripherals
     if (isMicRunning()) stopMic();
@@ -440,16 +432,10 @@ void powerForceDeepSleep() {
     touchEnterMonitor();
 
     if (!configureDeepSleepWakeSources()) {
-        LOG("[DEEP] Wake source setup failed - restarting to recover\n");
-        LOG_FLUSH();
         delay(100);
         ESP.restart();
     }
 
-    LOG("[DEEP] Wake sources set: EXT0=touch(INT low), EXT1=PMU_INT low\n");
-    LOG("[DEEP] Sleeping now...\n");
-    LOG_FLUSH();
-    Serial.end();  // Release USB CDC before deep sleep
     delay(100);
 
     esp_deep_sleep_start();
@@ -515,49 +501,7 @@ uint32_t powerGetIdleTimeMs() {
 // =============================================================================
 
 void powerPrintDiagnostics() {
-    LOGLN("\n========== POWER DIAGNOSTICS ==========");
-
-    // CPU info
-    LOG("CPU Frequency: %d MHz (range: %d-%d)\n",
-                  getCpuFrequencyMhz(), CPU_FREQ_MIN, CPU_FREQ_MAX);
-    LOG("Power State: %d ", g_powerState);
-    switch(g_powerState) {
-        case POWER_ACTIVE: LOGLN("(ACTIVE)"); break;
-        case POWER_DIMMED: LOGLN("(DIMMED)"); break;
-        case POWER_LIGHT_SLEEP: LOGLN("(LIGHT_SLEEP)"); break;
-        case POWER_DEEP_SLEEP: LOGLN("(DEEP_SLEEP)"); break;
-    }
-
-    LOG("Idle Time: %lu ms\n", powerGetIdleTimeMs());
-    LOG("BLE Connected: %s\n", s_bleConnected ? "YES" : "NO");
-    LOG("Recording: %s\n", g_recordingInProgress ? "YES" : "NO");
-    LOG("Charging: %s\n", g_isCharging ? "YES" : "NO");
-    LOG("PM Configured: %s\n", s_pmConfigured ? "YES" : "NO");
-    LOG("CPU Lock Held: %s\n", s_cpuLockHeld ? "YES" : "NO");
-
-    // PMU rails
-    if (g_pmuPresent) {
-        LOGLN("\nPMU Power Rails:");
-        LOG("  ALDO1: %s\n", g_pmu.isEnableALDO1() ? "ON" : "off");
-        LOG("  ALDO2: %s (backlight)\n", g_pmu.isEnableALDO2() ? "ON" : "off");
-        LOG("  ALDO3: %s (display+touch)\n", g_pmu.isEnableALDO3() ? "ON" : "off");
-        LOG("  ALDO4: %s\n", g_pmu.isEnableALDO4() ? "ON" : "off");
-        LOG("  BLDO1: %s\n", g_pmu.isEnableBLDO1() ? "ON" : "off");
-        LOG("  BLDO2: %s (haptics)\n", g_pmu.isEnableBLDO2() ? "ON" : "off");
-        LOG("  DLDO1: %s (speaker)\n", g_pmu.isEnableDLDO1() ? "ON" : "off");
-        LOG("  DLDO2: %s\n", g_pmu.isEnableDLDO2() ? "ON" : "off");
-        LOG("  DC2: %s\n", g_pmu.isEnableDC2() ? "ON" : "off");
-        LOG("  DC3: %s (GPS)\n", g_pmu.isEnableDC3() ? "ON" : "off");
-        LOG("  DC4: %s\n", g_pmu.isEnableDC4() ? "ON" : "off");
-        LOG("  DC5: %s\n", g_pmu.isEnableDC5() ? "ON" : "off");
-
-        LOGLN("\nBattery:");
-        LOG("  Voltage: %d mV\n", g_pmu.getBattVoltage());
-        LOG("  Percent: %d%%\n", g_pmu.getBatteryPercent());
-        LOG("  Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
-    }
-
-    LOGLN("========================================\n");
+    // Diagnostics removed - no serial output
 }
 
 float powerEstimateCurrentMa() {
@@ -597,6 +541,7 @@ void powerValidateWake() {
     if (resetReason != ESP_RST_DEEPSLEEP) return;
 
     esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
+    Serial.printf("[PWR] deep sleep wake, cause=%d\n", (int)wakeReason);
 
     // Wake pins become RTC IOs in deep sleep; restore to digital GPIO for runtime.
     rtc_gpio_deinit((gpio_num_t)TOUCH_INT_PIN);
@@ -604,19 +549,11 @@ void powerValidateWake() {
     pinMode(TOUCH_INT_PIN, INPUT_PULLUP);
     pinMode(PMU_INT_PIN, INPUT_PULLUP);
 
-    LOG("[TOUCH-DBG] === WAKE FROM DEEP SLEEP ===\n");
-    LOG("[TOUCH-DBG] Wake cause: %d (%s)\n", (int)wakeReason,
-        wakeReason == ESP_SLEEP_WAKEUP_EXT0 ? "TOUCH/EXT0" :
-        wakeReason == ESP_SLEEP_WAKEUP_EXT1 ? "BUTTON/EXT1" : "OTHER");
-    LOG("[TOUCH-DBG] GPIO16 at boot: %s\n",
-        digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
-    LOG_FLUSH();
-
     // Unexpected wake sources - go back to sleep
     if (wakeReason != ESP_SLEEP_WAKEUP_EXT0 &&
         wakeReason != ESP_SLEEP_WAKEUP_EXT1) {
-        LOG("[TOUCH-DBG] Unexpected wake - returning to deep sleep\n");
-        LOG_FLUSH();
+        Serial.println("[PWR] unexpected wake source, back to sleep");
+        Serial.flush();
         if (!configureDeepSleepWakeSources()) return;
         esp_deep_sleep_start();
     }
@@ -625,10 +562,6 @@ void powerValidateWake() {
     if (wakeReason == ESP_SLEEP_WAKEUP_EXT0) {
         // Step 1: Clear pending INT via I2C
         bool cleared = clearTouchInterrupt();
-        LOG("[TOUCH-DBG] After I2C clear: cleared=%s, GPIO16=%s\n",
-            cleared ? "yes" : "no",
-            digitalRead(TOUCH_INT_PIN) == HIGH ? "HIGH" : "LOW");
-        LOG_FLUSH();
 
         // Step 2: Wait for FT6336 scan cycle (~250ms in Monitor mode)
         delay(300);
@@ -636,18 +569,14 @@ void powerValidateWake() {
         // Step 3: Check if finger is still there
         pinMode(TOUCH_INT_PIN, INPUT_PULLUP);
         int pinState = digitalRead(TOUCH_INT_PIN);
-        LOG("[TOUCH-DBG] After 300ms wait: GPIO16=%s\n",
-            pinState == HIGH ? "HIGH (no finger)" : "LOW (finger present)");
-        LOG_FLUSH();
 
         if (pinState == HIGH) {
-            LOG("[TOUCH-DBG] SPURIOUS - returning to deep sleep\n");
-            LOG_FLUSH();
+            Serial.println("[PWR] spurious touch wake, back to sleep");
+            Serial.flush();
             if (!configureDeepSleepWakeSources()) return;
             esp_deep_sleep_start();
         }
 
-        LOG("[TOUCH-DBG] VALID touch wake - proceeding with boot\n");
-        LOG_FLUSH();
+        Serial.println("[PWR] touch wake validated, finger present");
     }
 }

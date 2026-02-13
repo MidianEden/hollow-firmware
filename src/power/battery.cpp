@@ -186,7 +186,6 @@ static int readCompensatedBatteryPercent() {
     // Read raw voltage from AXP2101
     int rawVoltage = g_pmu.getBattVoltage();
     if (rawVoltage <= 0) {
-        LOGLN("[BATT] WARNING: Failed to read voltage");
         return g_batteryPercent;  // Return last known value
     }
 
@@ -269,14 +268,6 @@ void initBatterySimulator() {
     // Read initial battery level
     g_batteryPercent = readCompensatedBatteryPercent();
 
-    LOG("[BATT] Init: %d%% (%dmV raw)\n",
-                  g_batteryPercent, g_batteryVoltageMv);
-
-    if (g_pmuPresent) {
-        LOG("[BATT] Charging: %s, VBUS: %s\n",
-                      g_pmu.isCharging() ? "YES" : "NO",
-                      g_pmu.isVbusIn() ? "YES" : "NO");
-    }
 }
 
 void updateBatteryPercent() {
@@ -297,13 +288,6 @@ void updateBatteryPercent() {
     g_lastBatteryUpdateMs = now;
 
     int newPercent = readCompensatedBatteryPercent();
-
-    // Log changes
-    if (newPercent != g_batteryPercent) {
-        LOG("[BATT] %d%% -> %d%% (%dmV, ~%dmA load)\n",
-                      g_batteryPercent, newPercent,
-                      g_batteryVoltageMv, estimateLoadCurrentMa());
-    }
 
     g_batteryPercent = newPercent;
 }
@@ -331,9 +315,6 @@ void updateChargingState() {
     g_isCharging = g_pmuPresent ? g_pmu.isVbusIn() : false;
 
     if (g_isCharging != wasCharging) {
-        LOG("[BATT] Charging state: %s\n",
-                      g_isCharging ? "STARTED" : "STOPPED");
-
         // Reset ALL battery tracking when charging state changes
         // This fixes "stuck" readings by allowing fresh calibration
         s_smoothedPercent = -1;
@@ -441,41 +422,8 @@ void drawBatteryOverlay(bool force) {
 }
 
 void testBatteryDisplay() {
-    LOGLN("\n========== BATTERY TEST ==========");
-
-    if (g_pmuPresent) {
-        int rawVoltage = g_pmu.getBattVoltage();
-        int loadCurrent = estimateLoadCurrentMa();
-        int compensatedVoltage = compensateVoltageForLoad(rawVoltage, loadCurrent);
-
-        LOG("Raw Voltage: %d mV\n", rawVoltage);
-        LOG("Est. Load Current: %d mA\n", loadCurrent);
-        LOG("Compensated Voltage: %d mV\n", compensatedVoltage);
-        LOG("Battery Percent: %d%%\n", g_batteryPercent);
-        LOG("Fuel Gauge Reading: %d%%\n", g_pmu.getBatteryPercent());
-        LOG("Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
-        LOG("VBUS Present: %s\n", g_pmu.isVbusIn() ? "YES" : "NO");
-        LOG("Battery Connected: %s\n", g_pmu.isBatteryConnect() ? "YES" : "NO");
-
-        // Voltage reference table
-        LOGLN("\nVoltage Reference (open-circuit):");
-        LOGLN("  4.15V+ = 100%");
-        LOGLN("  4.00V  = ~85%");
-        LOGLN("  3.85V  = ~70%");
-        LOGLN("  3.75V  = ~50%");
-        LOGLN("  3.65V  = ~35%");
-        LOGLN("  3.50V  = ~20%");
-        LOGLN("  3.30V  = ~5%");
-        LOGLN("  3.00V  = 0%");
-    } else {
-        LOGLN("PMU not present");
-    }
-
-    LOG("\nDisplayed: %d%%\n", g_batteryPercent);
     s_drawnBatteryLevel = -1;
     drawBatteryOverlay(true);
-
-    LOGLN("===================================\n");
 }
 
 // Get raw voltage for external use
@@ -491,8 +439,6 @@ void batteryResetAfterWake() {
     // Called when waking from light sleep to prevent voltage jump artifacts
     // The battery voltage can spike/drop when load changes dramatically
     // By resetting the samples and waiting, we get a clean reading
-
-    LOG("[BATT] Reset after wake - waiting for voltage stabilization\n");
 
     // Reset all averaging/smoothing to get fresh readings
     s_samplesInitialized = false;

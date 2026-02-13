@@ -97,10 +97,6 @@ void drawFullAnswerScreen() {
     // margin*2 accounts for top margin and bottom padding
     g_maxScroll = max(0, totalHeight - SCREEN_H + margin * 2);
 
-    // DEBUG: Print scroll state to help diagnose scrolling issues
-    LOG("[SCROLL] textLen=%d totalHeight=%d maxScroll=%d scrollY=%d\n",
-                  text.length(), totalHeight, g_maxScroll, g_scrollY);
-
     render(true);
     drawBatteryOverlay(true);
 }

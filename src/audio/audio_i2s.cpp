@@ -115,16 +115,12 @@ static void micGpioRelease() {
 
 void initMic() {
     if (s_i2sInstalled) {
-        LOGLN("[MIC] Already installed");
         return;
     }
-
-    LOGLN("[MIC] Installing I2S driver...");
 
     // Install I2S driver
     esp_err_t err = i2s_driver_install(I2S_NUM_0, &I2S_CONFIG, 0, nullptr);
     if (err != ESP_OK) {
-        LOG("[MIC] ERROR: i2s_driver_install failed: %s\n", esp_err_to_name(err));
         return;
     }
 
@@ -132,7 +128,6 @@ void initMic() {
     micGpioConfigure();
     err = i2s_set_pin(I2S_NUM_0, &I2S_PINS);
     if (err != ESP_OK) {
-        LOG("[MIC] ERROR: i2s_set_pin failed: %s\n", esp_err_to_name(err));
         i2s_driver_uninstall(I2S_NUM_0);
         micGpioRelease();
         return;
@@ -146,23 +141,18 @@ void initMic() {
     s_i2sInstalled = true;
     s_i2sRunning = false;
 
-    LOG("[MIC] I2S driver installed (DMA: %d x %d samples)\n",
-                  DMA_BUF_COUNT, DMA_BUF_LEN);
 }
 
 void startMic() {
     // Driver should already be installed at boot
     if (!s_i2sInstalled) {
-        LOGLN("[MIC] WARNING: Driver not installed, initializing now");
         initMic();
         if (!s_i2sInstalled) {
-            LOGLN("[MIC] ERROR: Failed to init");
             return;
         }
     }
 
     if (s_i2sRunning) {
-        LOGLN("[MIC] Already running");
         return;
     }
 
@@ -171,7 +161,6 @@ void startMic() {
         micGpioConfigure();
         esp_err_t pinErr = i2s_set_pin(I2S_NUM_0, &I2S_PINS);
         if (pinErr != ESP_OK) {
-            LOG("[MIC] ERROR: i2s_set_pin failed: %s\n", esp_err_to_name(pinErr));
             micGpioRelease();
             return;
         }
@@ -189,7 +178,6 @@ void startMic() {
     // Start I2S - instant since driver is already installed
     esp_err_t err = i2s_start(I2S_NUM_0);
     if (err != ESP_OK) {
-        LOG("[MIC] ERROR: i2s_start failed: %s\n", esp_err_to_name(err));
         return;
     }
 
@@ -198,7 +186,6 @@ void startMic() {
     // Notify BLE to use fast connection parameters
     bleEnterActiveTransfer();
 
-    LOGLN("[MIC] Started - recording active");
 }
 
 void stopMic() {
@@ -212,10 +199,6 @@ void stopMic() {
     micGpioRelease();
 
     // Calculate recording stats
-    uint32_t durationMs = millis() - s_recordingStartMs;
-    LOG("[MIC] Stopped after %lu ms, %lu chunks sent\n",
-                  durationMs, s_totalChunksSent);
-
     // Notify BLE to return to low-power connection parameters
     bleExitActiveTransfer();
 }
@@ -237,7 +220,6 @@ void deinitMic() {
     // Release GPIO to minimize leakage current
     micGpioRelease();
 
-    LOGLN("[MIC] I2S driver uninstalled (shutdown only)");
 }
 
 bool isMicRunning() {
@@ -294,7 +276,6 @@ void updateRecording() {
     // Timeout protection: Max recording duration (60 seconds)
     // -------------------------------------------------------------------------
     if (now - s_recordingStartMs > RECORDING_MAX_DURATION_MS) {
-        LOGLN("[MIC] Max duration reached - auto-stopping");
         stopRecording();
         return;
     }
@@ -303,7 +284,6 @@ void updateRecording() {
     // BLE connection check - auto-stop if disconnected
     // -------------------------------------------------------------------------
     if (!bleIsConnected()) {
-        LOGLN("[MIC] BLE disconnected - stopping recording");
         stopRecording();
         return;
     }
@@ -325,7 +305,6 @@ void updateRecording() {
     if (err != ESP_OK) {
         s_consecutiveErrors++;
         if (s_consecutiveErrors % 5 == 0) {  // Log every 5th error
-            LOG("[MIC] i2s_read error: %s\n", esp_err_to_name(err));
         }
         return;
     }

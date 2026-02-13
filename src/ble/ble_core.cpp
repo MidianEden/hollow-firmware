@@ -58,6 +58,10 @@ constexpr uint16_t BLE_TIMEOUT_ACTIVE = 300;        // 3 seconds
 
 // POWER: Advertising intervals - balance between reconnection speed and power
 // Units: 0.625ms per unit
+// Fast advertising on boot/wake: 50ms for quick discovery
+constexpr uint16_t BLE_ADV_INT_MIN_FAST   = 0x0050;   // 50ms
+constexpr uint16_t BLE_ADV_INT_MAX_FAST   = 0x0050;   // 50ms
+constexpr uint32_t BLE_FAST_ADV_DURATION_MS = 25000;   // 25 seconds
 // Normal advertising (device active): 500-1000ms
 constexpr uint16_t BLE_ADV_INT_MIN_NORMAL = 0x0320;   // 500ms
 constexpr uint16_t BLE_ADV_INT_MAX_NORMAL = 0x0640;   // 1000ms
@@ -73,6 +77,10 @@ constexpr uint16_t BLE_TIMEOUT_SLEEP = 600;        // 6 seconds
 
 // Track current BLE power mode
 static bool s_bleSleepMode = false;
+
+// Fast advertising state (boot/deep-sleep wake burst)
+static uint32_t s_fastAdvStartMs = 0;
+static bool s_fastAdvActive = false;
 
 // MTU: 247 bytes is optimal for ESP32 BLE
 constexpr uint16_t BLE_MTU_SIZE = 247;
@@ -128,18 +136,15 @@ static void requestConnectionParams(bool activeTransfer) {
         params.max_int = BLE_CONN_INT_MAX_ACTIVE;
         params.latency = BLE_LATENCY_ACTIVE;
         params.timeout = BLE_TIMEOUT_ACTIVE;
-        LOGLN("[BLE] -> ACTIVE params (fast transfer)");
     } else {
         params.min_int = BLE_CONN_INT_MIN_NORMAL;
         params.max_int = BLE_CONN_INT_MAX_NORMAL;
         params.latency = BLE_LATENCY_NORMAL;
         params.timeout = BLE_TIMEOUT_NORMAL;
-        LOGLN("[BLE] -> NORMAL params (low power)");
     }
 
     esp_err_t err = esp_ble_gap_update_conn_params(&params);
     if (err != ESP_OK) {
-        LOG("[BLE] Param update failed: %s\n", esp_err_to_name(err));
         s_connectionErrors++;
     }
 
@@ -162,7 +167,9 @@ class ServerCallbacks : public BLEServerCallbacks {
         s_notifyErrors = 0;
         s_connectionErrors = 0;
 
-        LOG("[BLE] Connected, conn_id=%d\n", g_connId);
+        Serial.printf("[BLE] connected peer=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                      g_peerBda[0], g_peerBda[1], g_peerBda[2],
+                      g_peerBda[3], g_peerBda[4], g_peerBda[5]);
 
         // Notify power manager
         powerHandleBLEConnect();
@@ -184,8 +191,7 @@ class ServerCallbacks : public BLEServerCallbacks {
         s_lastParamUpdateMs = 0;
         memset(g_peerBda, 0, sizeof(g_peerBda));  // Clear peer address
 
-        LOG("[BLE] Disconnected (errors: notify=%lu, conn=%lu)\n",
-                      s_notifyErrors, s_connectionErrors);
+        Serial.println("[BLE] disconnected, restarting advertising");
 
         // Stop any ongoing recording
         if (g_recordingInProgress) {
@@ -204,9 +210,14 @@ class ServerCallbacks : public BLEServerCallbacks {
         // This prevents the watch from turning on when BLE disconnects while sleeping
         // powerMarkActivity();
 
-        // Restart advertising immediately
+        // Restart advertising - use fast intervals if still in boot burst window
+        if (s_fastAdvActive) {
+            BLEAdvertising *adv = BLEDevice::getAdvertising();
+            adv->setMinInterval(BLE_ADV_INT_MIN_FAST);
+            adv->setMaxInterval(BLE_ADV_INT_MAX_FAST);
+        }
         BLEDevice::startAdvertising();
-        LOGLN("[BLE] Advertising restarted");
+        Serial.println("[BLE] advertising restarted after disconnect");
     }
 };
 
@@ -215,9 +226,14 @@ class ServerCallbacks : public BLEServerCallbacks {
 // -----------------------------------------------------------------------------
 
 void initBLE() {
-    LOGLN("[BLE] Initializing...");
 
     BLEDevice::init(DEVICE_NAME);
+
+    // Log BLE address - this is the public address from eFuse, stable across deep sleep
+    esp_bd_addr_t bleAddr;
+    memcpy(bleAddr, BLEDevice::getAddress().getNative(), sizeof(bleAddr));
+    Serial.printf("[BLE] address=%02X:%02X:%02X:%02X:%02X:%02X (public, eFuse-stable)\n",
+                  bleAddr[0], bleAddr[1], bleAddr[2], bleAddr[3], bleAddr[4], bleAddr[5]);
 
     // Set MTU
     BLEDevice::setMTU(BLE_MTU_SIZE);
@@ -240,7 +256,6 @@ void initBLE() {
     // Default/scan power
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_N0);
 
-    LOGLN("[BLE] TX power: ADV=0dBm, CONN=+3dBm");
 
     // Create server
     g_server = BLEDevice::createServer();
@@ -287,26 +302,27 @@ void initBLE() {
     fileService->start();
     otaService->start();
 
-    // Configure advertising
+    // =========================================================================
+    // ADVERTISING - iOS auto-reconnect compatible
+    // =========================================================================
+    // Primary ADV payload: Hollow service UUID ONLY (no file/OTA UUIDs)
+    // iOS matches on this UUID for background reconnection.
+    // File and OTA services are discovered via GATT after connection.
     BLEAdvertising *adv = BLEDevice::getAdvertising();
     adv->addServiceUUID(HOLLOW_SERVICE_UUID);
-    adv->addServiceUUID(HOLLOW_FILE_SERVICE_UUID);
-    adv->addServiceUUID(HOLLOW_OTA_SERVICE_UUID);
-    adv->setScanResponse(true);
-    adv->setMinPreferred(0x06);  // Preferred connection interval hint
+    adv->setScanResponse(true);    // Name goes in scan response
+    adv->setMinPreferred(0x06);    // Preferred connection interval hint
     adv->setMaxPreferred(0x12);
 
-    // POWER: Set advertising intervals - start with normal intervals
-    adv->setMinInterval(BLE_ADV_INT_MIN_NORMAL);
-    adv->setMaxInterval(BLE_ADV_INT_MAX_NORMAL);
+    // Start with fast advertising (50ms) for quick discovery on boot/wake
+    adv->setMinInterval(BLE_ADV_INT_MIN_FAST);
+    adv->setMaxInterval(BLE_ADV_INT_MAX_FAST);
+    s_fastAdvStartMs = millis();
+    s_fastAdvActive = true;
 
     // Start advertising
     BLEDevice::startAdvertising();
-
-    LOG("[BLE] Initialized: MTU=%d, ADV=%d-%dms (normal mode)\n",
-                  BLE_MTU_SIZE,
-                  (BLE_ADV_INT_MIN_NORMAL * 625) / 1000,
-                  (BLE_ADV_INT_MAX_NORMAL * 625) / 1000);
+    Serial.printf("[BLE] advertising started (fast 50ms, svc=%s)\n", HOLLOW_SERVICE_UUID);
 }
 
 // -----------------------------------------------------------------------------
@@ -355,12 +371,23 @@ void bleExitActiveTransfer() {
     requestConnectionParams(false);
 }
 
-// Periodic advertising restart
+// Periodic advertising restart + fast→normal transition
 void ensureAdvertisingAlive() {
     if (g_bleConnected) return;
 
-    static uint32_t lastKickMs = 0;
     uint32_t now = millis();
+
+    // Transition from fast to normal advertising after 25 seconds
+    if (s_fastAdvActive && (now - s_fastAdvStartMs >= BLE_FAST_ADV_DURATION_MS)) {
+        s_fastAdvActive = false;
+        BLEAdvertising *adv = BLEDevice::getAdvertising();
+        adv->setMinInterval(BLE_ADV_INT_MIN_NORMAL);
+        adv->setMaxInterval(BLE_ADV_INT_MAX_NORMAL);
+        BLEDevice::startAdvertising();
+        return;
+    }
+
+    static uint32_t lastKickMs = 0;
 
     // POWER: Restart advertising less frequently - every 30 seconds
     // (was 15s, but advertising rarely fails and this saves power)
@@ -379,6 +406,7 @@ void ensureAdvertisingAlive() {
 void bleEnterSleepMode() {
     if (s_bleSleepMode) return;  // Already in sleep mode
     s_bleSleepMode = true;
+    s_fastAdvActive = false;  // Cancel fast advertising burst
 
     // If connected, request slower connection parameters
     if (g_bleConnected && g_connId != 0xFFFF) {
@@ -391,7 +419,6 @@ void bleEnterSleepMode() {
 
         esp_err_t err = esp_ble_gap_update_conn_params(&params);
         if (err == ESP_OK) {
-            LOGLN("[BLE] -> SLEEP params (250-500ms interval)");
         }
     }
 
@@ -401,7 +428,6 @@ void bleEnterSleepMode() {
         adv->setMinInterval(BLE_ADV_INT_MIN_SLEEP);
         adv->setMaxInterval(BLE_ADV_INT_MAX_SLEEP);
         BLEDevice::startAdvertising();
-        LOGLN("[BLE] -> SLEEP advertising (1-2s interval)");
     }
 }
 
@@ -420,7 +446,6 @@ void bleExitSleepMode() {
 
         esp_err_t err = esp_ble_gap_update_conn_params(&params);
         if (err == ESP_OK) {
-            LOGLN("[BLE] -> NORMAL params (75-150ms interval)");
         }
     }
 
@@ -430,7 +455,6 @@ void bleExitSleepMode() {
         adv->setMinInterval(BLE_ADV_INT_MIN_NORMAL);
         adv->setMaxInterval(BLE_ADV_INT_MAX_NORMAL);
         BLEDevice::startAdvertising();
-        LOGLN("[BLE] -> NORMAL advertising (500-1000ms interval)");
     }
 }
 
@@ -493,7 +517,6 @@ bool bleIsConnectionHealthy() {
 // Full BLE shutdown for deep sleep
 // =============================================================================
 void bleFullShutdown() {
-    LOGLN("[BLE] Full shutdown for deep sleep...");
 
     // 1. Stop advertising
     BLEAdvertising* adv = BLEDevice::getAdvertising();
@@ -514,5 +537,4 @@ void bleFullShutdown() {
     // 4. Deinit entire BLE stack (bluedroid + controller + memory release)
     BLEDevice::deinit(true);
 
-    LOGLN("[BLE] Shutdown complete - stack fully deinitialized");
 }

@@ -16,7 +16,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-// Hardware config (includes HOLLOW_DEBUG logging macros)
+// Hardware config
 #include "hardware_config.h"
 
 // UI
@@ -45,51 +45,15 @@
 #define BUILD_DATE __DATE__ " " __TIME__
 
 // =============================================================================
-// PERIODIC DEBUG SUMMARY (POWER: gated by HOLLOW_DEBUG)
-// =============================================================================
-constexpr uint32_t SUMMARY_INTERVAL_MS = 10 * 60 * 1000;  // 10 minutes
-static uint32_t s_lastSummaryMs = 0;
-
-static const char *powerStateName(PowerState state) {
-    switch (state) {
-        case POWER_ACTIVE: return "ACTIVE";
-        case POWER_DIMMED: return "DIMMED";
-        case POWER_LIGHT_SLEEP: return "LIGHT_SLEEP";
-        case POWER_DEEP_SLEEP: return "DEEP_SLEEP";
-        default: return "UNKNOWN";
-    }
-}
-
-static void logPeriodicSummary() {
-#if HOLLOW_DEBUG
-    uint32_t now = millis();
-    if (s_lastSummaryMs == 0) {
-        s_lastSummaryMs = now;
-        return;
-    }
-    if (now - s_lastSummaryMs < SUMMARY_INTERVAL_MS) {
-        return;
-    }
-    s_lastSummaryMs = now;
-
-    LOG("\n[SUMMARY] Uptime: %lu s\n", now / 1000);
-    LOG("[SUMMARY] Power: %s idle=%lu ms cpu=%d MHz\n",
-        powerStateName(g_powerState), powerGetIdleTimeMs(), getCpuFrequencyMhz());
-    LOG("[SUMMARY] BLE: %s sleep=%s recording=%s charging=%s\n",
-        g_bleConnected ? "connected" : "advertising",
-        bleIsInSleepMode() ? "yes" : "no",
-        g_recordingInProgress ? "yes" : "no",
-        g_isCharging ? "yes" : "no");
-    LOG("[SUMMARY] Battery: %d%% (%dmV) heap=%d\n",
-        g_batteryPercent, g_batteryVoltageMv, ESP.getFreeHeap());
-#endif
-}
-
-// =============================================================================
 // SETUP
 // =============================================================================
 
 void setup() {
+    // -------------------------------------------------------------------------
+    // 0. SERIAL - for diagnostics (enable ARDUINO_USB_CDC_ON_BOOT=1 to see)
+    // -------------------------------------------------------------------------
+    Serial.begin(115200);
+
     // -------------------------------------------------------------------------
     // 1. POWER MANAGER FIRST
     // -------------------------------------------------------------------------
@@ -98,39 +62,13 @@ void setup() {
     powerManagerInit();
 
     // -------------------------------------------------------------------------
-    // 2. Serial for debugging (POWER: disabled in production via HOLLOW_DEBUG=0)
-    // -------------------------------------------------------------------------
-#if HOLLOW_DEBUG
-    LOG_INIT(115200);
-    delay(50);  // Reduced from 100ms for faster boot
-
-    LOGLN("\n\n========================================");
-    LOGLN("  HOLLOW WATCH FIRMWARE v" FIRMWARE_VERSION);
-    LOGLN("  Build: " BUILD_DATE);
-    LOGLN("========================================\n");
-#endif
-
-    // -------------------------------------------------------------------------
     // 2.5. VALIDATE DEEP SLEEP WAKE - may not return if spurious
     // -------------------------------------------------------------------------
     // If woken from deep sleep by an uncleared touch INT (no real finger),
     // this goes back to deep sleep immediately without full init.
     powerValidateWake();
 
-    // Log reset reason
     esp_reset_reason_t resetReason = esp_reset_reason();
-    LOG("Reset reason: %d ", resetReason);
-    switch (resetReason) {
-        case ESP_RST_POWERON:   LOGLN("(Power on)"); break;
-        case ESP_RST_SW:        LOGLN("(Software reset)"); break;
-        case ESP_RST_PANIC:     LOGLN("(Panic/crash!)"); break;
-        case ESP_RST_INT_WDT:   LOGLN("(Interrupt watchdog!)"); break;
-        case ESP_RST_TASK_WDT:  LOGLN("(Task watchdog!)"); break;
-        case ESP_RST_WDT:       LOGLN("(Other watchdog)"); break;
-        case ESP_RST_DEEPSLEEP: LOGLN("(Deep sleep wake)"); break;
-        case ESP_RST_BROWNOUT:  LOGLN("(BROWNOUT - battery critical!)"); break;
-        default:                LOGLN("(Unknown)"); break;
-    }
 
     // Check wake reason and handle deep sleep wake
     esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
@@ -138,34 +76,28 @@ void setup() {
                               (wakeReason == ESP_SLEEP_WAKEUP_EXT0 ||
                                wakeReason == ESP_SLEEP_WAKEUP_EXT1);
 
-    // Show wake/reset reason on screen briefly for diagnostics
-    // This helps identify spurious wakes without needing serial
-    if (resetReason == ESP_RST_DEEPSLEEP || resetReason == ESP_RST_PANIC ||
-        resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_INT_WDT ||
-        resetReason == ESP_RST_BROWNOUT) {
-        const char *reason = "???";
-        switch (wakeReason) {
-            case ESP_SLEEP_WAKEUP_EXT0:      reason = "TOUCH (EXT0)"; break;
-            case ESP_SLEEP_WAKEUP_EXT1:      reason = "BUTTON (EXT1)"; break;
-            case ESP_SLEEP_WAKEUP_TIMER:     reason = "TIMER"; break;
-            case ESP_SLEEP_WAKEUP_GPIO:      reason = "GPIO"; break;
-            case ESP_SLEEP_WAKEUP_UNDEFINED: reason = "UNDEFINED"; break;
-            default:                         reason = "OTHER"; break;
-        }
-        const char *rst = "DEEPSLEEP";
-        if (resetReason == ESP_RST_PANIC)    rst = "PANIC!";
-        if (resetReason == ESP_RST_TASK_WDT) rst = "WDT!";
-        if (resetReason == ESP_RST_INT_WDT)  rst = "INT_WDT!";
-        if (resetReason == ESP_RST_BROWNOUT) rst = "BROWNOUT!";
-
-        LOG("Wake diagnostic: rst=%s wake=%s\n", rst, reason);
+    // Log reset/wake reason
+    const char *rstStr = "POWERON";
+    switch (resetReason) {
+        case ESP_RST_DEEPSLEEP: rstStr = "DEEPSLEEP"; break;
+        case ESP_RST_PANIC:     rstStr = "PANIC"; break;
+        case ESP_RST_TASK_WDT:  rstStr = "WDT"; break;
+        case ESP_RST_INT_WDT:   rstStr = "INT_WDT"; break;
+        case ESP_RST_BROWNOUT:  rstStr = "BROWNOUT"; break;
+        case ESP_RST_SW:        rstStr = "SW_RESET"; break;
+        default: break;
     }
-
-    if (wokeFromDeepSleep) {
-        LOGLN("========================================");
-        LOGLN("WOKE FROM DEEP SLEEP - AUTO BLE SCAN");
-        LOGLN("========================================");
+    const char *wakeStr = "NONE";
+    switch (wakeReason) {
+        case ESP_SLEEP_WAKEUP_EXT0:      wakeStr = "TOUCH(EXT0)"; break;
+        case ESP_SLEEP_WAKEUP_EXT1:      wakeStr = "BUTTON(EXT1)"; break;
+        case ESP_SLEEP_WAKEUP_TIMER:     wakeStr = "TIMER"; break;
+        case ESP_SLEEP_WAKEUP_GPIO:      wakeStr = "GPIO"; break;
+        case ESP_SLEEP_WAKEUP_UNDEFINED: wakeStr = "UNDEF"; break;
+        default: break;
     }
+    Serial.printf("[BOOT] reset=%s wake=%s deep_sleep_wake=%d\n",
+                  rstStr, wakeStr, wokeFromDeepSleep);
 
     // -------------------------------------------------------------------------
     // 3. Watchdog (30 second timeout)
@@ -176,13 +108,11 @@ void setup() {
     // -------------------------------------------------------------------------
     // 4. PMU (controls power rails)
     // -------------------------------------------------------------------------
-    LOGLN("\n[INIT] PMU...");
     g_pmuPresent = initPMU();
 
     // -------------------------------------------------------------------------
     // 5. Display
     // -------------------------------------------------------------------------
-    LOGLN("[INIT] Display...");
     uiInitDisplay();
 
     // Skip boot animation if waking from deep sleep (faster wake)
@@ -193,7 +123,6 @@ void setup() {
     // -------------------------------------------------------------------------
     // 6. State and timekeeping
     // -------------------------------------------------------------------------
-    LOGLN("[INIT] State...");
     initState();
     timeSyncInit();
     initBatterySimulator();
@@ -204,13 +133,11 @@ void setup() {
     // -------------------------------------------------------------------------
     // 7. BLE (after PMU and display are ready)
     // -------------------------------------------------------------------------
-    LOGLN("[INIT] BLE...");
     initBLE();
 
     // -------------------------------------------------------------------------
     // 8. Mic - Initialize I2S driver at boot for instant recording
     // -------------------------------------------------------------------------
-    LOGLN("[INIT] Mic (persistent I2S driver)...");
     initMic();  // Install I2S driver once, never uninstall
 
     // -------------------------------------------------------------------------
@@ -219,20 +146,11 @@ void setup() {
     delay(50);  // Reduced from 100ms
     testBatteryDisplay();
 
-    // Always go to idle screen - BLE advertising starts automatically via initBLE()
-    if (wokeFromDeepSleep) {
-        LOGLN("\n[INIT] Deep sleep wake - BLE advertising active automatically");
-    }
     drawIdleScreen();
     lastDrawnState = IDLE;
 
     updateChargingState();
 
-    powerPrintDiagnostics();
-
-    LOGLN("\n[INIT] Setup complete - entering main loop");
-    LOG("[INIT] Free heap: %d bytes\n", ESP.getFreeHeap());
-    LOGLN("========================================\n");
 }
 
 // =============================================================================
@@ -331,11 +249,6 @@ void loop() {
             drawBatteryOverlay(false);
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Periodic debug summary (10 min)
-    // -------------------------------------------------------------------------
-    logPeriodicSummary();
 
     // -------------------------------------------------------------------------
     // Frame pacing - Adaptive for smooth UI

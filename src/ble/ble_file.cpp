@@ -9,7 +9,6 @@
 void sendRecordedFileOverBle(BLECharacteristic *pChar) {
     if (!pChar) return;
     if (g_recorded_adpcm.empty()) {
-        LOGLN("No recorded audio to send.");
         return;
     }
 
@@ -33,7 +32,6 @@ void sendRecordedFileOverBle(BLECharacteristic *pChar) {
         offset += toSend;
         vTaskDelay(5 / portTICK_PERIOD_MS);
     }
-    LOG("Sent %u bytes over BLE file characteristic\n", (unsigned)total_len);
 }
 
 class FileCharCallbacks : public BLECharacteristicCallbacks {

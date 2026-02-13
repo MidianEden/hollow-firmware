@@ -63,5 +63,4 @@ void processPendingText() {
     currentState = ANSWER;
     resetAnswerScrollState();
     markActivity();
-    LOG("[BLE] Received text response (%d chars) -> ANSWER\n", value.length());
 }

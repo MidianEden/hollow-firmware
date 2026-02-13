@@ -63,11 +63,9 @@ void stopRecording() {
         currentState = WAITING_ANSWER;
         g_waitingStartMs = millis();  // Start timeout clock
         bleSendControlMessage("END");
-        LOGLN("[STATE] -> WAITING_ANSWER (timeout in 30s)");
     } else {
         currentState = IDLE;
         g_waitingStartMs = 0;
-        LOGLN("[STATE] -> IDLE (BLE not ready)");
     }
 }
 
@@ -84,7 +82,6 @@ void checkWaitingTimeout() {
 
     uint32_t elapsed = millis() - g_waitingStartMs;
     if (elapsed >= WAITING_ANSWER_TIMEOUT_MS) {
-        LOG("[STATE] Waiting timeout after %lu ms -> IDLE\n", elapsed);
         currentState = IDLE;
         g_waitingStartMs = 0;
         markActivity();

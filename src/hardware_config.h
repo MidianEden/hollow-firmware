@@ -1,28 +1,6 @@
 #ifndef HARDWARE_CONFIG_H
 #define HARDWARE_CONFIG_H
 
-// =============================================================================
-// POWER: Debug Logging Control
-// =============================================================================
-// Set HOLLOW_DEBUG=0 in platformio.ini for production to disable all logging
-// This saves ~2-5mA by not keeping USB/UART peripherals active
-// =============================================================================
-#ifndef HOLLOW_DEBUG
-#define HOLLOW_DEBUG 0  // Default to disabled for power savings
-#endif
-
-#if HOLLOW_DEBUG
-    #define LOG_INIT(...)  Serial.begin(__VA_ARGS__)
-    #define LOG(...)       Serial.printf(__VA_ARGS__)
-    #define LOGLN(msg)     Serial.println(msg)
-    #define LOG_FLUSH()    Serial.flush()
-#else
-    #define LOG_INIT(...)  do {} while(0)
-    #define LOG(...)       do {} while(0)
-    #define LOGLN(msg)     do {} while(0)
-    #define LOG_FLUSH()    do {} while(0)
-#endif
-
 // T-Watch S3 Hardware Pin Definitions
 // Based on official LilyGo T-Watch S3 specifications
 

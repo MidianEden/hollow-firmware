@@ -19,7 +19,6 @@ static void calibrationPMU(uint16_t batteryCapacityMah) {
     // Enable fuel gauge for battery percentage
     g_pmu.enableGauge();
     g_pmu.fuelGaugeControl(true, true);
-    LOG("Fuel gauge configured for %d mAh battery\n", batteryCapacityMah);
 }
 
 bool initPMU() {
@@ -27,10 +26,8 @@ bool initPMU() {
     pinMode(PMU_INT_PIN, INPUT_PULLUP);
 
     if (!g_pmu.init(Wire)) {
-        LOGLN("ERROR: PMU init failed!");
         return false;
     }
-    LOGLN("PMU initialized successfully");
 
     // =========================================================================
     // USB/VBUS settings
@@ -120,16 +117,7 @@ bool initPMU() {
     // Initialize fuel gauge
     calibrationPMU(detectBatteryCapacityMah());
 
-    // Print diagnostics
-    LOGLN("\n=== Battery Diagnostics ===");
-    LOG("Battery Voltage: %d mV\n", g_pmu.getBattVoltage());
-    LOG("Battery Percent: %d%%\n", g_pmu.getBatteryPercent());
-    LOG("Charging: %s\n", g_pmu.isCharging() ? "YES" : "NO");
-    LOG("VBUS In: %s\n", g_pmu.isVbusIn() ? "YES" : "NO");
-    LOGLN("===========================\n");
-
     g_pmuPresent = true;
-    LOGLN("PMU configured for ULTRA-LOW POWER");
     return true;
 }
 
@@ -170,7 +158,6 @@ void pmuPrepareDeepSleep() {
     // This is the most aggressive power saving mode
     // =========================================================================
 
-    LOG("[PMU] Preparing for maximum power saving deep sleep...\n");
 
     // Disable display power rails (display is already off via sleep command)
     g_pmu.disableALDO2();    // POWER: Display backlight OFF
@@ -194,13 +181,11 @@ void pmuPrepareDeepSleep() {
     g_pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ |
                     XPOWERS_AXP2101_PKEY_LONG_IRQ);   // Button wake (short + long press)
 
-    LOG("[PMU] Deep sleep mode enabled - current should be <100µA\n");
 }
 
 void pmuRestoreFromSleep() {
     if (!g_pmuPresent) return;
 
-    LOG("[PMU] Restoring from deep sleep...\n");
 
     // Re-enable display power rails
     g_pmu.enableALDO2();    // Backlight
@@ -215,5 +200,4 @@ void pmuRestoreFromSleep() {
     // Clear any pending IRQs
     g_pmu.clearIrqStatus();
 
-    LOG("[PMU] PMU restored - normal operation mode\n");
 }

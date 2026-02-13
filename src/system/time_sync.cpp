@@ -73,7 +73,6 @@ void timeSyncInit() {
 
     g_timePrefsReady = g_timePrefs.begin(TIME_PREF_NAMESPACE, false);
     if (!g_timePrefsReady) {
-        LOGLN("WARN: Time prefs init failed; clock persistence disabled");
     } else {
         loadStoredTime();
     }

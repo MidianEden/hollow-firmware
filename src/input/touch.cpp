@@ -176,10 +176,6 @@ void handleTouch() {
             int prevScroll = g_scrollY;
             g_scrollY += dy;
 
-            // DEBUG: Print scroll values before clamping
-            LOG("[TOUCH] dy=%d scrollY=%d->%d maxScroll=%d\n",
-                          dy, prevScroll, g_scrollY, g_maxScroll);
-
             if (g_scrollY < 0) g_scrollY = 0;
             if (g_scrollY > g_maxScroll) g_scrollY = g_maxScroll;
 
