@@ -12,6 +12,7 @@
 
 #include <esp_gap_ble_api.h>
 #include <esp_gatt_common_api.h>
+#include <BLESecurity.h>
 
 #include "../hardware_config.h"
 #include "../system/state.h"
@@ -178,6 +179,10 @@ class ServerCallbacks : public BLEServerCallbacks {
         // Short delay for connection to stabilize
         delay(50);  // Reduced from 100ms
 
+        // Request link encryption - restores bonding keys for bonded peers,
+        // or triggers pairing/bonding for new peers
+        esp_ble_set_encryption(param->connect.remote_bda, ESP_BLE_SEC_ENCRYPT);
+
         // Request connection parameters for normal operation
         requestConnectionParams(false);
 
@@ -222,6 +227,38 @@ class ServerCallbacks : public BLEServerCallbacks {
 };
 
 // -----------------------------------------------------------------------------
+// Security Callbacks - BLE bonding event handler
+// -----------------------------------------------------------------------------
+
+class SecurityCallbacks : public BLESecurityCallbacks {
+    uint32_t onPassKeyRequest() override {
+        Serial.println("[BLE-SEC] passkey request (Just Works)");
+        return 0;
+    }
+    void onPassKeyNotify(uint32_t pass_key) override {
+        Serial.printf("[BLE-SEC] passkey display: %06lu\n", (unsigned long)pass_key);
+    }
+    bool onConfirmPIN(uint32_t pin) override {
+        Serial.printf("[BLE-SEC] numeric comparison %06lu -> auto-accept\n", (unsigned long)pin);
+        return true;
+    }
+    bool onSecurityRequest() override {
+        Serial.println("[BLE-SEC] security request -> accept");
+        return true;
+    }
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
+        if (cmpl.success) {
+            Serial.printf("[BLE-SEC] bonding OK peer=%02X:%02X:%02X:%02X:%02X:%02X mode=0x%02x\n",
+                cmpl.bd_addr[0], cmpl.bd_addr[1], cmpl.bd_addr[2],
+                cmpl.bd_addr[3], cmpl.bd_addr[4], cmpl.bd_addr[5],
+                cmpl.auth_mode);
+        } else {
+            Serial.printf("[BLE-SEC] bonding FAILED reason=0x%x\n", cmpl.fail_reason);
+        }
+    }
+};
+
+// -----------------------------------------------------------------------------
 // Initialization
 // -----------------------------------------------------------------------------
 
@@ -234,6 +271,41 @@ void initBLE() {
     memcpy(bleAddr, BLEDevice::getAddress().getNative(), sizeof(bleAddr));
     Serial.printf("[BLE] address=%02X:%02X:%02X:%02X:%02X:%02X (public, eFuse-stable)\n",
                   bleAddr[0], bleAddr[1], bleAddr[2], bleAddr[3], bleAddr[4], bleAddr[5]);
+
+    // =========================================================================
+    // SECURITY - BLE bonding for iOS auto-reconnect after deep sleep
+    // =========================================================================
+    // Bond data is persisted in NVS automatically by the ESP-IDF Bluedroid stack.
+    // The ESP32's public BLE address (eFuse) is stable across deep sleep.
+    // After initial pairing, iOS stores the bond and can auto-reconnect to the
+    // same address + service UUID without user interaction, even from background.
+    BLEDevice::setSecurityCallbacks(new SecurityCallbacks());
+
+    BLESecurity security;
+    security.setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);  // Secure Connections + Bonding
+    security.setCapability(ESP_IO_CAP_NONE);                  // Just Works (no I/O on watch)
+    security.setKeySize(16);
+    security.setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);  // Distribute LTK + IRK
+    security.setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);  // Accept LTK + IRK
+    Serial.println("[BLE-SEC] security: SC+Bond, JustWorks, LTK+IRK");
+
+    // Log bonded peers persisted in NVS from previous sessions
+    int bondCount = esp_ble_get_bond_device_num();
+    Serial.printf("[BLE-SEC] bonded peers in NVS: %d\n", bondCount);
+    if (bondCount > 0) {
+        esp_ble_bond_dev_t *bondList = (esp_ble_bond_dev_t *)malloc(
+            bondCount * sizeof(esp_ble_bond_dev_t));
+        if (bondList) {
+            int actual = bondCount;
+            esp_ble_get_bond_device_list(&actual, bondList);
+            for (int i = 0; i < actual; i++) {
+                Serial.printf("[BLE-SEC]   peer[%d]=%02X:%02X:%02X:%02X:%02X:%02X\n", i,
+                    bondList[i].bd_addr[0], bondList[i].bd_addr[1], bondList[i].bd_addr[2],
+                    bondList[i].bd_addr[3], bondList[i].bd_addr[4], bondList[i].bd_addr[5]);
+            }
+            free(bondList);
+        }
+    }
 
     // Set MTU
     BLEDevice::setMTU(BLE_MTU_SIZE);
